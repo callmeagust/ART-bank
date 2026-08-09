@@ -32,7 +32,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-SUPER_ADMIN_1 = 8490505070
+SUPER_ADMIN_1 = 5196596053
 SUPER_ADMIN_2 = 475473068  # ادمین دوم با دسترسی کامل
 
 # لیست سوپرادمین‌ها (از دیتابیس بارگذاری و به‌روزرسانی می‌شود)
@@ -51,8 +51,8 @@ BACKUP_CHANNEL_ID = -1003971216432
 # طبق درخواست، این دو متغیر به‌صورت جداگانه تعریف می‌شوند تا منطق مالی خزانه
 # (که صرفاً یک حساب در جدول users است) از منطق دسترسی مدیریتی (سوپرادمین) تفکیک شود.
 # از نظر عددی هر دو برابر با آیدی سوپرادمین اول هستند، اما در کد برای دو منظور متفاوت استفاده می‌شوند.
-TREASURY_USER_ID = 8490505070
-SUPER_ADMIN_ID = 8490505070
+TREASURY_USER_ID = 5196596053
+SUPER_ADMIN_ID = 5196596053
 
 BANK_SAVINGS_CAP = 4000  # سقف سپرده‌گذاری در بانک آترامنتوم (آتر)
 BANK_GRACE_PERIOD_HOURS = 24  # مهلت طلایی پرداخت اقساط قبل از جریمه دیرکرد
@@ -122,13 +122,19 @@ class ProductEditForm(StatesGroup):
 
 
 class RequestShopForm(StatesGroup):
+    waiting_for_announcement_confirm = State()
     waiting_for_channel = State()
+    waiting_for_shop_name = State()
+    waiting_for_shop_category = State()
+    waiting_for_final_confirm = State()
 
 
 # --- FSM States جدید برای بانک آترامنتوم و وام پویا ---
 class BankForm(StatesGroup):
     waiting_for_deposit_amount = State()
     waiting_for_withdraw_amount = State()
+    waiting_for_deposit_confirm = State()
+    waiting_for_withdraw_confirm = State()
 
 
 class LoanForm(StatesGroup):
@@ -137,6 +143,12 @@ class LoanForm(StatesGroup):
     waiting_for_method = State()
     waiting_for_guarantor = State()
     waiting_for_guarantor_confirm = State()
+    waiting_for_collateral_confirm = State()
+
+
+# --- FSM State جدید برای پیگیری مرسوله از بخش پروفایل ---
+class TrackForm(StatesGroup):
+    waiting_for_code = State()
 
 
 # =====================================================================================
@@ -299,6 +311,34 @@ class AntiSpamMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class PrivateStartRequiredMiddleware(BaseMiddleware):
+    """الزام استارت‌زدن ربات در پیوی قبل از اجازه استفاده از دستورات و دکمه‌های ربات در گروه‌ها.
+    در پیوی هیچ محدودیتی اعمال نمی‌شود. برای پیام‌های متنی (دستورات) هشدار به‌صورت پاسخ ارسال می‌شود
+    و برای تعاملات دکمه‌ای (CallbackQuery) هشدار به‌صورت پاپ‌آپ واقعی تلگرام (show_alert=True) نمایش
+    داده می‌شود، چون تلگرام فقط برای CallbackQuery امکان نمایش پاپ‌آپ بومی را فراهم می‌کند."""
+
+    WARNING_TEXT = (
+        "⚠️ ابتدا باید ربات را در پیوی استارت بزنید!\n"
+        "🔹 به پیوی ربات مراجعه کرده و دستور /start را ارسال کنید، سپس دستورات گروه فعال می‌شوند."
+    )
+
+    async def __call__(self, handler, event, data):
+        chat = getattr(event, "chat", None)
+        if chat is None:
+            msg = getattr(event, "message", None)
+            chat = msg.chat if msg else None
+
+        if chat is not None and chat.type != "private":
+            user_id = event.from_user.id
+            if not await has_started_private(user_id):
+                if isinstance(event, CallbackQuery):
+                    await event.answer(self.WARNING_TEXT, show_alert=True)
+                else:
+                    await event.reply(self.WARNING_TEXT)
+                return
+        return await handler(event, data)
+
+
 # --- ساخت دیتابیس و جدول‌ها ---
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -360,6 +400,17 @@ async def init_db():
                 status TEXT DEFAULT 'PENDING'
             )
         """)
+
+        # --- 🏪 مهاجرت (Migration) ستون‌های نام فروشگاه و نوع محصولات/زمینه فعالیت ---
+        # (بدون حذف هیچ‌کدام از داده‌ها یا ستون‌های قبلی جدول shops)
+        for col_name, col_type in [
+            ("shop_name", "TEXT"),
+            ("shop_category", "TEXT"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE shops ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass  # ستون از قبل وجود دارد
         await db.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 product_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -405,6 +456,13 @@ async def init_db():
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass  # ستون از قبل وجود دارد
+
+        # --- 🔒 مهاجرت (Migration) ستون بررسی استارت‌زدن پیوی کاربران ---
+        # (بدون حذف هیچ‌کدام از داده‌ها یا ستون‌های قبلی) - جهت الزام استارت پیوی قبل از استفاده در گروه
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN started_private BOOLEAN DEFAULT 0")
+        except Exception:
+            pass  # ستون از قبل وجود دارد
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 order_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -596,6 +654,16 @@ async def sync_user(user_id: int, username: str, full_name: str = "Unknown"):
         await db.commit()
 
 
+async def has_started_private(user_id: int) -> bool:
+    """بررسی می‌کند که آیا کاربر قبلاً ربات را در پیوی استارت زده است یا خیر."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT started_private FROM users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return bool(row and row[0])
+
+
 async def get_user_data(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -699,7 +767,11 @@ admin_router = Router()
 shop_router = Router()
 
 user_router.message.middleware(AntiSpamMiddleware())
+user_router.message.middleware(PrivateStartRequiredMiddleware())
+user_router.callback_query.middleware(PrivateStartRequiredMiddleware())
 shop_router.message.middleware(AntiSpamMiddleware())
+shop_router.message.middleware(PrivateStartRequiredMiddleware())
+shop_router.callback_query.middleware(PrivateStartRequiredMiddleware())
 
 
 # --- دستور همگانی /cancel ---
@@ -901,6 +973,13 @@ async def cmd_start(message: Message):
 
     await sync_user(user_id, username, full_name)
 
+    # 🔒 ثبت استارت‌زدن پیوی کاربر تا دستورات ربات در گروه‌ها برایش فعال شوند
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET started_private = 1 WHERE user_id = ?", (user_id,)
+        )
+        await db.commit()
+
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         payload = args[1].strip()
@@ -1015,6 +1094,7 @@ def _profile_main_buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏦 بانک آترامنتوم", callback_data="prof_bank")],
         [InlineKeyboardButton(text="📦 لیست دارایی‌ها", callback_data="prof_assets")],
+        [InlineKeyboardButton(text="🏪 فروشگاه", callback_data="prof_shop")],
         [InlineKeyboardButton(text="❓ راهنمایی", callback_data="prof_help")],
     ])
 
@@ -1023,6 +1103,15 @@ def _profile_help_back_buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home"),
     ]])
+
+
+def _get_profile_owner_id(message: Message):
+    """آیدی صاحب اصلی پیام پروفایل (کسی که ابتدا دستور /profile را ارسال کرده) را از روی پیام
+    ریپلای‌شده اولیه (reply_to_message) که هنگام ارسال پروفایل ثبت شده است برمی‌گرداند؛ تا فقط
+    همان کاربر بتواند از دکمه‌های شیشه‌ای پروفایل استفاده کند و افراد دیگر نتوانند با کلیک روی
+    این دکمه‌ها وارد بخش‌های حساب کاربری شخص دیگری شوند."""
+    reply = message.reply_to_message
+    return reply.from_user.id if reply and reply.from_user else None
 
 
 @user_router.message(Command("profile"))
@@ -1045,7 +1134,12 @@ async def cmd_profile(message: Message):
 
 @user_router.callback_query(F.data == "prof_home")
 async def cb_prof_home(callback: CallbackQuery):
-    """کلید «🔙 برگشت به پروفایل»: پیام را ویرایش کرده و به حالت اول صفحه /profile بازمی‌گرداند."""
+    """کلید «🔙 برگشت به پروفایل»: پیام را ویرایش کرده و به حالت اول صفحه /profile بازمی‌گرداند.
+    فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
     user_id = callback.from_user.id
     u = await get_user_data(user_id)
     if not u:
@@ -1065,7 +1159,12 @@ async def cb_prof_home(callback: CallbackQuery):
 @user_router.callback_query(F.data == "prof_help")
 async def cb_prof_help(callback: CallbackQuery):
     """کلید «❓ راهنمایی»: در گروه فقط لیست دستورات عمومی (بدون درنظرگرفتن سطح دسترسی یا ادمین
-    بودن کاربر) و در پیوی راهنمای کامل و شخصی‌سازی‌شده نمایش داده می‌شود."""
+    بودن کاربر) و در پیوی راهنمای کامل و شخصی‌سازی‌شده نمایش داده می‌شود.
+    فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
     group_only = not is_private(callback.message)
     txt = await _build_help_text(callback.from_user.id, group_only=group_only)
     try:
@@ -1084,7 +1183,12 @@ async def cb_prof_bank(callback: CallbackQuery):
     """کلید «🏦 بانک آترامنتوم»: پیام پروفایل را به ساختار بانک تبدیل می‌کند — در پیوی نمای کامل
     حساب بانکی (موجودی، سپرده، سود، وام) و در گروه/سوپرگروه نمای خلاصه؛ در هر دو حالت دکمه‌های
     عملیاتی اصلی بانک (واریز/برداشت/وام/مدیریت) کاملاً فعال هستند و دکمه «🔙 برگشت به پروفایل»
-    در انتهای کیبورد قرار می‌گیرد."""
+    در انتهای کیبورد قرار می‌گیرد. فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به
+    استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
     user_id = callback.from_user.id
     panel_type = "full" if is_private(callback.message) else "panel"
     rendered = await _bank_render(user_id, panel_type, with_back=True)
@@ -1099,30 +1203,229 @@ async def cb_prof_bank(callback: CallbackQuery):
     await callback.answer()
 
 
+def _profile_shop_menu_buttons(show_create: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="📃 لیست فروشگاه‌ها", callback_data="prof_shop_list")]]
+    if show_create:
+        rows.append([InlineKeyboardButton(text="🆕 ساخت فروشگاه", callback_data="prof_shop_create")])
+    rows.append([InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@user_router.callback_query(F.data == "prof_shop")
+async def cb_prof_shop(callback: CallbackQuery):
+    """کلید «🏪 فروشگاه»: منوی مدیریت فروشگاه را نمایش می‌دهد. دکمهٔ «🆕 ساخت فروشگاه» فقط در
+    پیوی نمایش داده می‌شود و در گروه/سوپرگروه پنهان است و صرفاً «📃 لیست فروشگاه‌ها» نشان داده
+    می‌شود. فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+    show_create = is_private(callback.message)
+    txt = "🏪 <b>فروشگاه</b>\n\nیکی از گزینه‌های زیر را انتخاب کنید:"
+    try:
+        await callback.message.edit_text(txt, reply_markup=_profile_shop_menu_buttons(show_create), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+async def _fetch_public_shops():
+    """لیست فروشگاه‌های تاییدشده (APPROVED) به‌همراه تعداد محصولات هرکدام را به‌صورت کاملاً پویا
+    (بدون کش) از دیتابیس واکشی می‌کند تا با اضافه یا حذف شدن هر فروشگاه یا محصول، بلافاصله در
+    فراخوانی بعدی به‌روز باشد."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT s.shop_id, s.channel_title,
+                   (SELECT COUNT(*) FROM products p WHERE p.shop_id = s.shop_id) AS product_count
+            FROM shops s
+            WHERE s.status = 'APPROVED'
+            ORDER BY s.shop_id ASC
+            """
+        ) as cur:
+            return await cur.fetchall()
+
+
+def _render_profile_shop_list_page(shops, page: int):
+    """متن و کیبورد صفحه‌بندی‌شدهٔ لیست عمومی فروشگاه‌ها را می‌سازد (مطابق الگوی استاندارد
+    صفحه‌بندی سایر بخش‌های ربات). هر فروشگاه با ایموجی مناسب (📌 اسم، 🆔 آیدی، 🛍 تعداد محصولات)
+    و با یک خط جداکننده از فروشگاه بعدی متمایز می‌شود."""
+    total = len(shops)
+    total_pages = max(1, math.ceil(total / LIST_SHOPS_PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    start = page * LIST_SHOPS_PAGE_SIZE
+    page_items = shops[start:start + LIST_SHOPS_PAGE_SIZE]
+
+    txt = f"🏪 <b>لیست فروشگاه‌ها (صفحه {page + 1} از {total_pages})</b>\n"
+    txt += f"مجموع فروشگاه‌ها: <code>{total}</code>\n\n"
+    if not page_items:
+        txt += "ℹ️ هیچ فروشگاهی یافت نشد."
+    for s in page_items:
+        safe_title = html.escape(s["channel_title"] or "بدون نام")
+        txt += (
+            f"📌 اسم فروشگاه: <b>{safe_title}</b>\n"
+            f"🆔 آیدی فروشگاه: <code>{s['shop_id']}</code>\n"
+            f"🛍 محصولات: <code>{s['product_count']}</code>\n"
+            "➖➖➖➖➖➖➖➖\n"
+        )
+
+    kb = _build_pagination_keyboard(page, total_pages, "profshop_page", refresh_data="profshop_refresh")
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="prof_shop")])
+    return txt, kb
+
+
+@user_router.callback_query(F.data == "prof_shop_list")
+async def cb_prof_shop_list(callback: CallbackQuery):
+    """کلید «📃 لیست فروشگاه‌ها»: لیست صفحه‌بندی‌شدهٔ فروشگاه‌های تاییدشده را نمایش می‌دهد. فقط
+    کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+    shops = await _fetch_public_shops()
+    if not shops:
+        await callback.answer("ℹ️ هیچ فروشگاهی یافت نشد.", show_alert=True)
+        return
+    txt, kb = _render_profile_shop_list_page(shops, 0)
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "profshop_page_noop")
+async def cb_prof_shop_list_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("profshop_page_"))
+async def cb_prof_shop_list_page(callback: CallbackQuery):
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+    try:
+        page = int(callback.data.split("_")[2])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    shops = await _fetch_public_shops()
+    if not shops:
+        await callback.answer("ℹ️ هیچ فروشگاهی یافت نشد.", show_alert=True)
+        return
+    txt, kb = _render_profile_shop_list_page(shops, page)
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "profshop_refresh")
+async def cb_prof_shop_list_refresh(callback: CallbackQuery):
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+    page = _extract_current_page(callback.message.text or "")
+    shops = await _fetch_public_shops()
+    if not shops:
+        await callback.answer("ℹ️ هیچ فروشگاهی یافت نشد.", show_alert=True)
+        return
+    txt, kb = _render_profile_shop_list_page(shops, page)
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer("🔄 لیست به‌روزرسانی شد.")
+
+
+@user_router.callback_query(F.data == "prof_shop_create")
+async def cb_prof_shop_create(callback: CallbackQuery, state: FSMContext):
+    """کلید «🆕 ساخت فروشگاه»: دقیقاً همان جریان دستور /request_shop (RequestShopForm) را از طریق
+    پیام پروفایل آغاز می‌کند و ابتدا اطلاعیهٔ مهم پیش از ساخت فروشگاه را با دو دکمهٔ تأیید/لغو
+    نمایش می‌دهد. این دکمه فقط در پیوی نمایش داده می‌شود؛ برای اطمینان بیشتر، در بدنه هم بررسی
+    می‌شود که در پیوی باشد. فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده از
+    این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+    if not is_private(callback.message):
+        await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+    message_id = callback.message.message_id
+    try:
+        await callback.message.edit_text(
+            _shop_announcement_text(), reply_markup=_shop_announcement_buttons(), parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await state.update_data(reqshop_user=callback.from_user.id)
+    await state.set_state(RequestShopForm.waiting_for_announcement_confirm)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, chat_id, callback.from_user.id, current_state,
+        lambda: _default_timeout_notice(callback.bot, chat_id, message_id),
+    )
+    await callback.answer()
+
+
 PROF_ASSETS_PAGE_SIZE = 10
 
 
 async def _fetch_profile_assets(user_id: int):
     """دارایی‌های قطعی (سفارش‌های تحویل‌شده) و سفارش‌های در حال جریان (در انتظار ارسال یا در حال
     ارسال) کاربر را واکشی می‌کند. طبق اولویت‌بندی درخواستی، دارایی‌های قطعی همیشه در صدر لیست
-    قرار می‌گیرند و پس از آن‌ها سفارش‌های در حال جریان می‌آیند."""
+    قرار می‌گیرند و پس از آن‌ها سفارش‌های در حال جریان می‌آیند؛ در هر بخش، کالاهایی که مبلغ
+    بیشتری برای آن‌ها پرداخت شده در رتبه‌های بالاتر قرار می‌گیرند. اگر کاربر از یک محصول مشخص
+    دو عدد یا بیشتر داشته باشد، آن‌ها در یک ردیف واحد «استک» (با شمارنده تعداد) نمایش داده
+    می‌شوند؛ استک‌شدن هیچ تأثیری در محاسبهٔ رتبه‌بندی بر اساس مبلغ ندارد (مبنای رتبه‌بندی همان
+    مبلغِ واحدِ محصول است، نه مجموع مبالغ نسخه‌های تکراری)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM orders WHERE buyer_id = ? AND status = 'DELIVERED' ORDER BY order_id DESC",
+            "SELECT * FROM orders WHERE buyer_id = ? AND status = 'DELIVERED' ORDER BY price DESC, order_id DESC",
             (user_id,),
         ) as cur:
             delivered = await cur.fetchall()
         async with db.execute(
-            "SELECT * FROM orders WHERE buyer_id = ? AND status IN ('PENDING', 'DISPATCHED') ORDER BY order_id DESC",
+            "SELECT * FROM orders WHERE buyer_id = ? AND status IN ('PENDING', 'DISPATCHED') ORDER BY price DESC, order_id DESC",
             (user_id,),
         ) as cur2:
             in_progress = await cur2.fetchall()
-    return list(delivered) + list(in_progress), len(delivered)
+
+    def _stack_group(rows):
+        """ردیف‌های هم‌محصول (بر اساس product_id) را در یک ردیف استک‌شده ادغام می‌کند. چون
+        ردیف‌های ورودی از قبل بر اساس مبلغ (نزولی) مرتب شده‌اند، جایگاه هر گروه در لیست همان
+        جایگاه بالاترین‌مبلغ نسخهٔ آن محصول باقی می‌ماند و صرفاً نسخه‌های تکراری زیر همان ردیف
+        جمع می‌شوند."""
+        stacked = []
+        groups = {}
+        for o in rows:
+            key = o["product_id"] if o["product_id"] else f"order_{o['order_id']}"
+            if key not in groups:
+                entry = dict(o)
+                entry["stack_count"] = 1
+                groups[key] = entry
+                stacked.append(entry)
+            else:
+                groups[key]["stack_count"] += 1
+        return stacked
+
+    delivered_stacked = _stack_group(delivered)
+    in_progress_stacked = _stack_group(in_progress)
+    return delivered_stacked + in_progress_stacked, len(delivered_stacked)
 
 
 def _render_profile_assets_page(items, delivered_count: int, page: int):
-    """متن شماره‌گذاری‌شده (۱۰تایی) و کیبورد دکمه‌های شماره‌ای ۲ستونه + ناوبری صفحه را می‌سازد."""
+    """متن شماره‌گذاری‌شده (۱۰تایی) و کیبورد دکمه‌های شماره‌ای ۲ستونه + ناوبری صفحه را می‌سازد.
+    اگر ردیفی استک‌شده باشد (چند نسخه از یک محصول)، تعداد آن به‌صورت «×n» کنار عنوان نمایش
+    داده می‌شود."""
     total = len(items)
     total_pages = max(1, math.ceil(total / PROF_ASSETS_PAGE_SIZE))
     page = max(0, min(page, total_pages - 1))
@@ -1141,7 +1444,9 @@ def _render_profile_assets_page(items, delivered_count: int, page: int):
         is_asset = (start + offset) < delivered_count
         emoji = "🟢" if is_asset else "🟡"
         safe_title = html.escape(o["product_title"] or "محصول حذف‌شده")
-        txt += f"{idx}. {emoji} {safe_title}\n"
+        stack_count = o["stack_count"] if "stack_count" in o.keys() else 1
+        count_suffix = f" ×{stack_count}" if stack_count > 1 else ""
+        txt += f"{idx}. {emoji} {safe_title}{count_suffix}\n"
         item_buttons.append(
             InlineKeyboardButton(text=f"محصول {idx}", callback_data=f"av_{o['order_id']}")
         )
@@ -1157,14 +1462,16 @@ def _render_profile_assets_page(items, delivered_count: int, page: int):
         nav_row.append(InlineKeyboardButton(text="صفحه بعد ▶️", callback_data=f"ap_{page + 1}"))
     kb_rows.append(nav_row)
 
-    kb_rows.append([InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="prof_assets")])
     return txt, InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
 
 async def _safe_show_text(callback: CallbackQuery, text: str, kb) -> None:
     """پیام فعلی را با متن/کیبورد داده‌شده به‌روزرسانی می‌کند؛ اگر پیام فعلی رسانه‌ای (مثلاً صفحه
     جزئیات محصول با عکس) باشد و edit_text ممکن نباشد، پیام قبلی حذف و پیام متنی جدید ارسال
-    می‌شود تا ناوبری بین لیست دارایی‌ها و جزئیات محصول بدون باگ کار کند."""
+    می‌شود تا ناوبری بین لیست دارایی‌ها و جزئیات محصول بدون باگ کار کند. آیدی پیام ریپلای‌شدهٔ
+    اصلی (صاحب پروفایل) حفظ می‌شود تا بررسی مالکیت دکمه‌ها برای کلیک‌های بعدی هم درست کار کند."""
+    orig_reply_id = callback.message.reply_to_message.message_id if callback.message.reply_to_message else None
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         return
@@ -1175,15 +1482,45 @@ async def _safe_show_text(callback: CallbackQuery, text: str, kb) -> None:
     except Exception:
         pass
     try:
-        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", reply_to_message_id=orig_reply_id)
     except Exception:
         pass
 
 
+def _profile_assets_menu_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 لیست دارایی‌های موجود", callback_data="prof_assets_list")],
+        [InlineKeyboardButton(text="📮 پیگیری مرسوله", callback_data="prof_track_start")],
+        [InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home")],
+    ])
+
+
 @user_router.callback_query(F.data == "prof_assets")
 async def cb_prof_assets(callback: CallbackQuery):
-    """کلید «📦 لیست دارایی‌ها»: پیام پروفایل را به لیست صفحه‌بندی‌شدهٔ دارایی‌های قطعی و
-    سفارش‌های در حال جریان کاربر تبدیل می‌کند."""
+    """کلید «📦 لیست دارایی‌ها»: صفحه میانی با دو گزینهٔ «لیست دارایی‌های موجود» و «پیگیری
+    مرسوله» را نمایش می‌دهد. فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده
+    از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+    txt = "📦 <b>دارایی‌ها و مرسولات</b>\n\nیکی از گزینه‌های زیر را انتخاب کنید:"
+    try:
+        await callback.message.edit_text(txt, reply_markup=_profile_assets_menu_buttons(), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "prof_assets_list")
+async def cb_prof_assets_list(callback: CallbackQuery):
+    """کلید «📋 لیست دارایی‌های موجود»: پیام را به لیست صفحه‌بندی‌شدهٔ دارایی‌های قطعی و
+    سفارش‌های در حال جریان کاربر تبدیل می‌کند. فقط کاربری که ابتدا دستور /profile را ارسال
+    کرده مجاز به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
     items, delivered_count = await _fetch_profile_assets(callback.from_user.id)
     if not items:
         await callback.answer("ℹ️ هیچ دارایی یا سفارشی یافت نشد.", show_alert=True)
@@ -1195,7 +1532,12 @@ async def cb_prof_assets(callback: CallbackQuery):
 
 @user_router.callback_query(F.data.startswith("ap_"))
 async def cb_profile_assets_page(callback: CallbackQuery):
-    """ناوبری صفحه‌بندی لیست دارایی‌ها (📄 صفحه قبل/بعد)."""
+    """ناوبری صفحه‌بندی لیست دارایی‌ها (📄 صفحه قبل/بعد). فقط کاربری که ابتدا دستور /profile
+    را ارسال کرده مجاز به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
     try:
         page = int(callback.data[len("ap_"):])
     except ValueError:
@@ -1215,7 +1557,12 @@ async def cb_profile_asset_detail(callback: CallbackQuery):
     """دکمه شماره‌ای هر آیتم: جزئیات کامل همان دارایی/سفارش (عکس، عنوان، توضیحات، قیمت، نام
     فروشگاه و وضعیت ارسال) را نمایش می‌دهد. ابتدا سعی می‌شود پیام فعلی (متن یا عکس) با
     editMessageMedia/editMessageText به‌روزرسانی شود؛ در صورت بروز خطا یا عدم پشتیبانی، پیام
-    قبلی حذف و پیام جدید ارسال می‌شود."""
+    قبلی حذف و پیام جدید ارسال می‌شود. فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز
+    به استفاده از این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
     try:
         order_id = int(callback.data[len("av_"):])
     except ValueError:
@@ -1252,7 +1599,7 @@ async def cb_profile_asset_detail(callback: CallbackQuery):
         f"⚡ وضعیت: {status_txt}"
     )
     back_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔙 برگشت به لیست دارایی‌ها", callback_data="prof_assets"),
+        InlineKeyboardButton(text="🔙 برگشت به لیست دارایی‌ها", callback_data="prof_assets_list"),
     ]])
     photo_id = order["product_photo_id"]
 
@@ -1272,19 +1619,190 @@ async def cb_profile_asset_detail(callback: CallbackQuery):
         edited = False
 
     if not edited:
+        orig_reply_id = callback.message.reply_to_message.message_id if callback.message.reply_to_message else None
         try:
             await callback.message.delete()
         except Exception:
             pass
         try:
             if photo_id:
-                await callback.message.answer_photo(photo=photo_id, caption=caption, reply_markup=back_kb, parse_mode="HTML")
+                await callback.message.answer_photo(
+                    photo=photo_id, caption=caption, reply_markup=back_kb, parse_mode="HTML",
+                    reply_to_message_id=orig_reply_id,
+                )
             else:
-                await callback.message.answer(caption, reply_markup=back_kb, parse_mode="HTML")
+                await callback.message.answer(
+                    caption, reply_markup=back_kb, parse_mode="HTML", reply_to_message_id=orig_reply_id,
+                )
         except Exception:
             pass
 
     await callback.answer()
+
+
+def _track_parcel_prompt_text() -> str:
+    return (
+        "📮 <b>پیگیری مرسوله</b>\n\n"
+        "لطفاً کد پیگیری ۱۰ رقمی مرسولهٔ خود را با ریپلای روی همین پیام ارسال کنید."
+    )
+
+
+def _track_back_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔙 برگشت", callback_data="prof_assets"),
+    ]])
+
+
+@user_router.callback_query(F.data == "prof_track_start")
+async def cb_prof_track_start(callback: CallbackQuery, state: FSMContext):
+    """کلید «📮 پیگیری مرسوله»: از کاربر می‌خواهد کد پیگیری ۱۰ رقمی مرسولهٔ خود را با ریپلای روی
+    همین پیام ارسال کند. فقط کاربری که ابتدا دستور /profile را ارسال کرده مجاز به استفاده از
+    این دکمه است."""
+    owner_id = _get_profile_owner_id(callback.message)
+    if owner_id is not None and callback.from_user.id != owner_id:
+        await callback.answer()
+        return
+
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    message_id = callback.message.message_id
+    orig_reply_id = callback.message.reply_to_message.message_id if callback.message.reply_to_message else None
+
+    try:
+        await callback.message.edit_text(_track_parcel_prompt_text(), parse_mode="HTML")
+    except Exception:
+        pass
+
+    await state.update_data(
+        track_user=user_id, track_chat_id=chat_id, track_msg_id=message_id,
+        track_orig_reply_id=orig_reply_id,
+    )
+    await state.set_state(TrackForm.waiting_for_code)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, chat_id, user_id, current_state,
+        lambda: callback.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text="⏳ عملیات پیگیری مرسوله به دلیل عدم دریافت پاسخ در بازه ۱ دقیقه به‌صورت خودکار لغو شد.",
+            reply_markup=_track_back_buttons(), parse_mode="HTML",
+        ),
+    )
+    await callback.answer()
+
+
+@user_router.message(TrackForm.waiting_for_code)
+async def process_track_parcel_code(message: Message, state: FSMContext):
+    """پردازش کد پیگیری ریپلای‌شده توسط کاربر: بررسی می‌کند که پیام واقعاً ریپلای روی پیام
+    درخواست کد باشد، سپس صحت کد و تعلق آن به همین کاربر را بررسی می‌کند. در هر صورت (کد درست یا
+    نادرست)، پیام حاوی کد کاربر برای جلوگیری از شلوغی گروه حذف می‌شود (در صورت داشتن دسترسی لازم
+    توسط ربات)."""
+    data = await state.get_data()
+    user_id = message.from_user.id
+    if user_id != data.get("track_user"):
+        return
+    chat_id = data.get("track_chat_id", message.chat.id)
+    prompt_msg_id = data.get("track_msg_id")
+    orig_reply_id = data.get("track_orig_reply_id")
+
+    if not message.reply_to_message or message.reply_to_message.message_id != prompt_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=chat_id, message_id=prompt_msg_id,
+                text="⚠️ لطفاً روی همین پیام ریپلای کرده و کد پیگیری مرسوله را ارسال کنید.\n\n" + _track_parcel_prompt_text(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+
+    cancel_input_timeout(chat_id, user_id)
+    code = (message.text or "").strip()
+
+    # 🧹 حذف پیام حاوی کد پیگیری کاربر برای جلوگیری از شلوغی گروه (فقط در صورت داشتن دسترسی حذف پیام توسط ربات)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM orders WHERE code_10 = ? AND buyer_id = ?", (code, user_id)
+        ) as cur:
+            order = await cur.fetchone()
+
+        if not order:
+            await state.clear()
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=chat_id, message_id=prompt_msg_id,
+                    text="❌ کد پیگیری وارد شده صحیح نیست یا متعلق به شما نمی‌باشد.",
+                    reply_markup=_track_back_buttons(),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+
+        shop_name = "نامشخص"
+        async with db.execute("SELECT channel_title FROM shops WHERE shop_id = ?", (order["shop_id"],)) as cur_s:
+            shop_row = await cur_s.fetchone()
+            if shop_row and shop_row["channel_title"]:
+                shop_name = shop_row["channel_title"]
+
+    await state.clear()
+
+    safe_title = html.escape(order["product_title"] or "محصول حذف‌شده")
+    safe_desc = html.escape(order["product_desc"] or "-")
+    safe_shop = html.escape(shop_name)
+    status_txt = _order_status_label(order["status"])
+
+    caption = (
+        f"🛍 <b>{safe_title}</b>\n\n"
+        f"📝 توضیحات: {safe_desc}\n"
+        f"💰 قیمت: <code>₳ {order['price']}</code>\n"
+        f"🏪 فروشگاه: {safe_shop}\n"
+        f"🔐 کد پیگیری: <code>{order['code_10']}</code>\n"
+        f"⚡ وضعیت: {status_txt}"
+    )
+    back_kb = _track_back_buttons()
+    photo_id = order["product_photo_id"]
+
+    edited = False
+    try:
+        if photo_id:
+            await message.bot.edit_message_media(
+                chat_id=chat_id, message_id=prompt_msg_id,
+                media=InputMediaPhoto(media=photo_id, caption=caption, parse_mode="HTML"),
+                reply_markup=back_kb,
+            )
+        else:
+            await message.bot.edit_message_text(
+                chat_id=chat_id, message_id=prompt_msg_id,
+                text=caption, reply_markup=back_kb, parse_mode="HTML",
+            )
+        edited = True
+    except Exception:
+        edited = False
+
+    if not edited:
+        try:
+            await message.bot.delete_message(chat_id=chat_id, message_id=prompt_msg_id)
+        except Exception:
+            pass
+        try:
+            if photo_id:
+                await message.bot.send_photo(
+                    chat_id=chat_id, photo=photo_id, caption=caption,
+                    reply_markup=back_kb, parse_mode="HTML", reply_to_message_id=orig_reply_id,
+                )
+            else:
+                await message.bot.send_message(
+                    chat_id=chat_id, text=caption,
+                    reply_markup=back_kb, parse_mode="HTML", reply_to_message_id=orig_reply_id,
+                )
+        except Exception:
+            pass
 
 
 @user_router.callback_query(F.data == "ignore")
@@ -2430,7 +2948,7 @@ async def cmd_give(message: Message, state: FSMContext):
         return await message.reply("❌ مقدار باید مثبت باشد.")
     if target == TREASURY_USER_ID:
         return await message.reply(
-            "🏛 حساب <code>8490505070</code> صرفاً نقش خزانه مرکزی سیستم را دارد و برای جلوگیری از "
+            "🏛 حساب <code>5196596053</code> صرفاً نقش خزانه مرکزی سیستم را دارد و برای جلوگیری از "
             "دستکاری ناخواسته بودجه خزانه، از طریق دستورات مدیریتی شخصی قابل واریز نیست.",
             parse_mode="HTML",
         )
@@ -2493,7 +3011,7 @@ async def cmd_take(message: Message, state: FSMContext):
         return await message.reply("❌ مقدار باید مثبت باشد.")
     if target == TREASURY_USER_ID:
         return await message.reply(
-            "🏛 حساب <code>8490505070</code> صرفاً نقش خزانه مرکزی سیستم را دارد و برای جلوگیری از "
+            "🏛 حساب <code>5196596053</code> صرفاً نقش خزانه مرکزی سیستم را دارد و برای جلوگیری از "
             "دستکاری ناخواسته بودجه خزانه، از طریق دستورات مدیریتی شخصی قابل کسر نیست.",
             parse_mode="HTML",
         )
@@ -5128,17 +5646,79 @@ async def cmd_remove_courier(message: Message, state: FSMContext):
 
 # --- ۲. دستورات فروشندگان (Shop Owners) ---
 
+def _shop_announcement_text() -> str:
+    return (
+        "📢 <b>اطلاعیه مهم پیش از آغاز به‌کار فروشگاه</b>\n\n"
+        "دوست گرامی، پیش از آنکه چراغ فروشگاه خود را روشن کنی و قدم در مسیر کسب‌وکار بگذاری، "
+        "لطفاً نکات زیر را با دقت مطالعه کن:\n\n"
+        "• 🤝 <b>هماهنگی با مدیریت:</b> پیش از ثبت نهایی فروشگاه، حتماً درباره نوع محصولات، "
+        "شیوه قیمت‌گذاری و تمامی جزئیات مربوطه، تأییدیه لازم را از مدیریت مدرسه دریافت کن.\n"
+        "• ⚠️ <b>پیامدهای عدم هماهنگی:</b> اقدام به راه‌اندازی فروشگاه بدون اطلاع، ممکن است منجر "
+        "به تعلیق (فریز) موقت حساب یا کسر مبلغی به‌عنوان جریمه از موجودی‌ات شود. پس برای جلوگیری "
+        "از بروز هرگونه مشکل، ابتدا هماهنگی‌های لازم را انجام بده.\n"
+        "• 🛒 <b>تجربه یک تجارت بی‌دغدغه:</b> رعایت این اصول ساده، مسیر فعالیتت را هموار می‌سازد "
+        "تا بتوانی با خیالی آسوده فروشگاهت را مدیریت کرده و از ادامه بازی لذت ببری.\n\n"
+        "✅ در صورتی که موارد بالا را به‌دقت مطالعه کرده و با تمام بخش‌های آن موافقی، برای ادامه "
+        "مسیر کلیک کن:"
+    )
+
+
+def _shop_announcement_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ تأیید", callback_data="reqshop_announce_confirm"),
+        InlineKeyboardButton(text="❌ لغو", callback_data="reqshop_announce_cancel"),
+    ]])
+
+
 @shop_router.message(Command("request_shop"))
 async def cmd_request_shop(message: Message, state: FSMContext):
     if not is_private(message):
         return
-    prompt = await message.reply("لطفاً آیدی عددی یا یوزرنیم کانال/گروه خود را ارسال کنید (مثال: @mychannel یا -100123456789):")
-    await state.set_state(RequestShopForm.waiting_for_channel)
+    prompt = await message.reply(_shop_announcement_text(), reply_markup=_shop_announcement_buttons(), parse_mode="HTML")
+    await state.update_data(reqshop_user=message.from_user.id)
+    await state.set_state(RequestShopForm.waiting_for_announcement_confirm)
     current_state = await state.get_state()
     schedule_input_timeout(
         state, message.chat.id, message.from_user.id, current_state,
         lambda: _default_timeout_notice(message.bot, message.chat.id, prompt.message_id),
     )
+
+
+@shop_router.callback_query(RequestShopForm.waiting_for_announcement_confirm, F.data == "reqshop_announce_cancel")
+async def cb_reqshop_announce_cancel(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if callback.from_user.id != data.get("reqshop_user"):
+        return await callback.answer()
+    cancel_input_timeout(callback.message.chat.id, callback.from_user.id)
+    await state.clear()
+    try:
+        await callback.message.edit_text("❌ فرآیند ساخت فروشگاه لغو شد.")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@shop_router.callback_query(RequestShopForm.waiting_for_announcement_confirm, F.data == "reqshop_announce_confirm")
+async def cb_reqshop_announce_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if callback.from_user.id != data.get("reqshop_user"):
+        return await callback.answer()
+    cancel_input_timeout(callback.message.chat.id, callback.from_user.id)
+    chat_id = callback.message.chat.id
+    try:
+        await callback.message.edit_text(
+            "لطفاً آیدی عددی یا یوزرنیم کانال/گروه خود را ارسال کنید (مثال: @mychannel یا -100123456789):",
+        )
+        message_id = callback.message.message_id
+    except Exception:
+        message_id = None
+    await state.set_state(RequestShopForm.waiting_for_channel)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, chat_id, callback.from_user.id, current_state,
+        lambda: _default_timeout_notice(callback.bot, chat_id, message_id),
+    )
+    await callback.answer()
 
 
 @shop_router.message(RequestShopForm.waiting_for_channel)
@@ -5162,15 +5742,126 @@ async def process_request_shop_channel(message: Message, state: FSMContext):
         await message.reply(f"❌ یافتن کانال/گروه با خطا مواجه شد. از ادمین بودن ربات و صحت آیدی مطمئن شوید.\nخطا: {e}")
         return _reschedule()
 
+    # ⚠️ در این مرحله هنوز هیچ ثبتی در دیتابیس انجام نشده؛ اطلاعات کانال فقط در State ذخیره
+    # می‌شود تا پس از تکمیل مراحل بعدی (نام و نوع فعالیت) و تأیید نهایی کاربر، ساختار قبلی ثبت
+    # فروشگاه (درج با وضعیت PENDING و ارسال برای تأیید ادمین) اجرا شود.
+    await state.update_data(reqshop_channel_id=str(chat.id), reqshop_channel_title=chat.title)
+
+    prompt = await message.reply("🏷 لطفاً نام دلخواه فروشگاه خود را ارسال کنید:")
+    await state.set_state(RequestShopForm.waiting_for_shop_name)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, message.chat.id, message.from_user.id, current_state,
+        lambda: _default_timeout_notice(message.bot, message.chat.id, prompt.message_id),
+    )
+
+
+@shop_router.message(RequestShopForm.waiting_for_shop_name)
+async def process_request_shop_name(message: Message, state: FSMContext):
+    cancel_input_timeout(message.chat.id, message.from_user.id)
+    shop_name = (message.text or "").strip()
+    if not shop_name:
+        prompt = await message.reply("⚠️ نام فروشگاه نمی‌تواند خالی باشد. لطفاً نام دلخواه فروشگاه خود را ارسال کنید:")
+        current_state = RequestShopForm.waiting_for_shop_name.state
+        schedule_input_timeout(
+            state, message.chat.id, message.from_user.id, current_state,
+            lambda: _default_timeout_notice(message.bot, message.chat.id, prompt.message_id),
+        )
+        return
+
+    await state.update_data(reqshop_name=shop_name)
+    prompt = await message.reply(
+        "🗂 لطفاً نوع محصولات یا زمینه فعالیت فروشگاه خود را مشخص کنید (مثلاً: فروش چوب‌دستی، کازینو و...):"
+    )
+    await state.set_state(RequestShopForm.waiting_for_shop_category)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, message.chat.id, message.from_user.id, current_state,
+        lambda: _default_timeout_notice(message.bot, message.chat.id, prompt.message_id),
+    )
+
+
+@shop_router.message(RequestShopForm.waiting_for_shop_category)
+async def process_request_shop_category(message: Message, state: FSMContext):
+    cancel_input_timeout(message.chat.id, message.from_user.id)
+    shop_category = (message.text or "").strip()
+    if not shop_category:
+        prompt = await message.reply(
+            "⚠️ این مورد نمی‌تواند خالی باشد. لطفاً نوع محصولات یا زمینه فعالیت فروشگاه خود را مشخص کنید:"
+        )
+        current_state = RequestShopForm.waiting_for_shop_category.state
+        schedule_input_timeout(
+            state, message.chat.id, message.from_user.id, current_state,
+            lambda: _default_timeout_notice(message.bot, message.chat.id, prompt.message_id),
+        )
+        return
+
+    await state.update_data(reqshop_category=shop_category)
+    data = await state.get_data()
+    safe_channel_title = html.escape(data.get("reqshop_channel_title") or "بدون نام")
+    safe_shop_name = html.escape(data.get("reqshop_name") or "-")
+    safe_category = html.escape(shop_category)
+
+    confirm_text = (
+        "🔍 <b>تأییدیه نهایی ثبت فروشگاه</b>\n\n"
+        f"📡 کانال/گروه: <b>{safe_channel_title}</b> (<code>{data.get('reqshop_channel_id')}</code>)\n"
+        f"🏷 نام فروشگاه: <b>{safe_shop_name}</b>\n"
+        f"🗂 نوع محصولات/زمینه فعالیت: {safe_category}\n\n"
+        "⚠️ با تأیید نهایی، درخواست ثبت فروشگاه شما برای بررسی و تأیید سوپرادمین ارسال خواهد شد."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ تأیید نهایی", callback_data="reqshop_final_confirm"),
+        InlineKeyboardButton(text="❌ لغو", callback_data="reqshop_final_cancel"),
+    ]])
+    prompt = await message.reply(confirm_text, reply_markup=kb, parse_mode="HTML")
+    await state.set_state(RequestShopForm.waiting_for_final_confirm)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, message.chat.id, message.from_user.id, current_state,
+        lambda: _default_timeout_notice(message.bot, message.chat.id, prompt.message_id),
+    )
+
+
+@shop_router.callback_query(RequestShopForm.waiting_for_final_confirm, F.data == "reqshop_final_cancel")
+async def cb_reqshop_final_cancel(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if callback.from_user.id != data.get("reqshop_user"):
+        return await callback.answer()
+    cancel_input_timeout(callback.message.chat.id, callback.from_user.id)
+    await state.clear()
+    try:
+        await callback.message.edit_text("❌ فرآیند ساخت فروشگاه لغو شد.")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@shop_router.callback_query(RequestShopForm.waiting_for_final_confirm, F.data == "reqshop_final_confirm")
+async def cb_reqshop_final_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if callback.from_user.id != data.get("reqshop_user"):
+        return await callback.answer()
+    cancel_input_timeout(callback.message.chat.id, callback.from_user.id)
+
+    # ✅ از همین‌جا به بعد، دقیقاً همان ساختار قبلی موجود برای ساخت فروشگاه اجرا می‌شود: درج
+    # فروشگاه با وضعیت 'PENDING' در دیتابیس و ارسال برای تأیید سوپرادمین با دستور /shop_requests.
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO shops (owner_id, channel_id, channel_title, status) VALUES (?, ?, ?, 'PENDING')",
-            (message.from_user.id, str(chat.id), chat.title)
+            "INSERT INTO shops (owner_id, channel_id, channel_title, status, shop_name, shop_category) "
+            "VALUES (?, ?, ?, 'PENDING', ?, ?)",
+            (
+                callback.from_user.id, data.get("reqshop_channel_id"), data.get("reqshop_channel_title"),
+                data.get("reqshop_name"), data.get("reqshop_category"),
+            ),
         )
         await db.commit()
 
     await state.clear()
-    await message.reply("✅ درخواست ثبت فروشگاه ارسال شد و پس از بررسی توسط سوپرادمین تایید خواهد شد.")
+    try:
+        await callback.message.edit_text("✅ درخواست ثبت فروشگاه ارسال شد و پس از بررسی توسط سوپرادمین تایید خواهد شد.")
+    except Exception:
+        pass
+    await callback.answer()
 
 
 @shop_router.message(Command("add_product"))
@@ -6584,6 +7275,29 @@ def _bank_withdraw_prompt_text() -> str:
     )
 
 
+def _bank_deposit_confirm_text(amount: int) -> str:
+    return (
+        "🔍 <b>تأیید واریز به بانک آترامنتوم</b>\n\n"
+        f"💳 مبلغ واریزی: <code>₳ {amount}</code>\n\n"
+        "⚠️ با تأیید، این مبلغ از کیف پول شما کسر و به سپرده بانکی‌تان افزوده می‌شود."
+    )
+
+
+def _bank_withdraw_confirm_text(amount: int) -> str:
+    return (
+        "🔍 <b>تأیید برداشت از بانک آترامنتوم</b>\n\n"
+        f"💳 مبلغ برداشتی: <code>₳ {amount}</code>\n\n"
+        "⚠️ با تأیید، این مبلغ از سپرده بانکی‌تان کسر و به کیف پول شما افزوده می‌شود."
+    )
+
+
+def _bank_confirm_buttons(confirm_data: str, cancel_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ تأیید", callback_data=confirm_data),
+        InlineKeyboardButton(text="❌ لغو", callback_data=cancel_data),
+    ]])
+
+
 def _bank_detect_panel_type(message: Message) -> str:
     """نوع پنل بانکی (کامل یا سریع) را از روی تعداد ردیف‌های دکمه پیام فعلی تشخیص می‌دهد."""
     try:
@@ -6813,6 +7527,99 @@ async def process_bank_deposit(message: Message, state: FSMContext):
                     f"سقف باقیمانده قابل واریز شما: <code>₳ {remaining_cap}</code>"
                 )
 
+    # ⚠️ در این مرحله هیچ تغییر مالی‌ای هنوز اعمال نشده؛ فقط پیش‌نمایش نمایش داده می‌شود و
+    # اجرای واقعی واریز صرفاً پس از کلیک کاربر روی دکمه «✅ تأیید» انجام خواهد شد.
+    await state.update_data(deposit_amount=amount)
+    await state.set_state(BankForm.waiting_for_deposit_confirm)
+    try:
+        await message.bot.edit_message_text(
+            chat_id=chat_id, message_id=bank_msg_id,
+            text=_bank_deposit_confirm_text(amount),
+            reply_markup=_bank_confirm_buttons("bank_deposit_confirm", "bank_deposit_cancel"),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, chat_id, user_id, current_state,
+        lambda: _bank_edit_main(
+            message.bot, chat_id, bank_msg_id, user_id, panel_type,
+            note="⏳ عملیات واریز به دلیل عدم دریافت پاسخ در بازه ۱ دقیقه به‌صورت خودکار لغو شد.",
+            with_back=from_profile,
+        ),
+    )
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@user_router.callback_query(BankForm.waiting_for_deposit_confirm, F.data == "bank_deposit_cancel")
+async def cb_bank_deposit_cancel(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if callback.from_user.id != data.get("bank_user"):
+        return await callback.answer("❌ فقط خودتان می‌توانید لغو کنید.", show_alert=True)
+    chat_id = data.get("bank_chat_id", callback.message.chat.id)
+    bank_msg_id = data.get("bank_msg_id")
+    panel_type = data.get("bank_panel_type", "panel")
+    from_profile = data.get("bank_from_profile", False)
+    cancel_input_timeout(chat_id, callback.from_user.id)
+    await state.clear()
+    await _bank_edit_main(
+        callback.bot, chat_id, bank_msg_id, callback.from_user.id, panel_type,
+        note="❌ عملیات واریز لغو شد. هیچ تغییر مالی‌ای انجام نشد.",
+        with_back=from_profile,
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(BankForm.waiting_for_deposit_confirm, F.data == "bank_deposit_confirm")
+async def cb_bank_deposit_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    if user_id != data.get("bank_user"):
+        return await callback.answer("❌ فقط خودتان می‌توانید تأیید کنید.", show_alert=True)
+    chat_id = data.get("bank_chat_id", callback.message.chat.id)
+    bank_msg_id = data.get("bank_msg_id")
+    panel_type = data.get("bank_panel_type", "panel")
+    from_profile = data.get("bank_from_profile", False)
+    amount = data.get("deposit_amount")
+    cancel_input_timeout(chat_id, user_id)
+
+    if not amount:
+        await state.clear()
+        return await callback.answer("❌ اطلاعات عملیات نامعتبر شده است. لطفاً دوباره تلاش کنید.", show_alert=True)
+
+    async def _fail(note_text: str):
+        await state.clear()
+        await _bank_edit_main(callback.bot, chat_id, bank_msg_id, user_id, panel_type, note=note_text, with_back=from_profile)
+
+    # 🔁 بازبینی نهایی موجودی بلافاصله پیش از اجرای واقعی، برای جلوگیری از ناهماهنگی احتمالی
+    # ناشی از فاصله زمانی میان نمایش پیش‌نمایش و کلیک کاربر روی دکمه تأیید.
+    async with db_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT balance, frozen_balance, bank_savings, is_frozen FROM users WHERE user_id = ?",
+                (user_id,),
+            ) as cur:
+                u = await cur.fetchone()
+            if not u or u["is_frozen"]:
+                return await _fail("❌ حساب شما مسدود (فریز) است.")
+
+            transferable = max(0, u["balance"] - u["frozen_balance"])
+            if amount > transferable:
+                return await _fail(
+                    f"❌ حداکثر مبلغ قابل واریز شما (موجودی قابل انتقال): <code>₳ {transferable}</code>"
+                )
+            remaining_cap = max(0, BANK_SAVINGS_CAP - u["bank_savings"])
+            if amount > remaining_cap:
+                return await _fail(
+                    f"❌ سقف سپرده‌گذاری بانک <code>₳ {BANK_SAVINGS_CAP}</code> است.\n"
+                    f"سقف باقیمانده قابل واریز شما: <code>₳ {remaining_cap}</code>"
+                )
+
             await db.execute(
                 "UPDATE users SET balance = balance - ?, bank_savings = bank_savings + ? WHERE user_id = ?",
                 (amount, amount, user_id),
@@ -6821,14 +7628,11 @@ async def process_bank_deposit(message: Message, state: FSMContext):
 
     await state.clear()
     await _bank_edit_main(
-        message.bot, chat_id, bank_msg_id, user_id, panel_type,
+        callback.bot, chat_id, bank_msg_id, user_id, panel_type,
         note=f"✅ مبلغ <code>₳ {amount}</code> با موفقیت به حساب بانکی شما واریز شد.",
         with_back=from_profile,
     )
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await callback.answer()
 
 
 @user_router.message(BankForm.waiting_for_withdraw_amount)
@@ -6884,6 +7688,90 @@ async def process_bank_withdraw(message: Message, state: FSMContext):
                     f"❌ موجودی بانکی شما کافی نیست. سپرده فعلی: <code>₳ {u['bank_savings']}</code>"
                 )
 
+    # ⚠️ در این مرحله هیچ تغییر مالی‌ای هنوز اعمال نشده؛ فقط پیش‌نمایش نمایش داده می‌شود و
+    # اجرای واقعی برداشت صرفاً پس از کلیک کاربر روی دکمه «✅ تأیید» انجام خواهد شد.
+    await state.update_data(withdraw_amount=amount)
+    await state.set_state(BankForm.waiting_for_withdraw_confirm)
+    try:
+        await message.bot.edit_message_text(
+            chat_id=chat_id, message_id=bank_msg_id,
+            text=_bank_withdraw_confirm_text(amount),
+            reply_markup=_bank_confirm_buttons("bank_withdraw_confirm", "bank_withdraw_cancel"),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, chat_id, user_id, current_state,
+        lambda: _bank_edit_main(
+            message.bot, chat_id, bank_msg_id, user_id, panel_type,
+            note="⏳ عملیات برداشت به دلیل عدم دریافت پاسخ در بازه ۱ دقیقه به‌صورت خودکار لغو شد.",
+            with_back=from_profile,
+        ),
+    )
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@user_router.callback_query(BankForm.waiting_for_withdraw_confirm, F.data == "bank_withdraw_cancel")
+async def cb_bank_withdraw_cancel(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if callback.from_user.id != data.get("bank_user"):
+        return await callback.answer("❌ فقط خودتان می‌توانید لغو کنید.", show_alert=True)
+    chat_id = data.get("bank_chat_id", callback.message.chat.id)
+    bank_msg_id = data.get("bank_msg_id")
+    panel_type = data.get("bank_panel_type", "panel")
+    from_profile = data.get("bank_from_profile", False)
+    cancel_input_timeout(chat_id, callback.from_user.id)
+    await state.clear()
+    await _bank_edit_main(
+        callback.bot, chat_id, bank_msg_id, callback.from_user.id, panel_type,
+        note="❌ عملیات برداشت لغو شد. هیچ تغییر مالی‌ای انجام نشد.",
+        with_back=from_profile,
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(BankForm.waiting_for_withdraw_confirm, F.data == "bank_withdraw_confirm")
+async def cb_bank_withdraw_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    if user_id != data.get("bank_user"):
+        return await callback.answer("❌ فقط خودتان می‌توانید تأیید کنید.", show_alert=True)
+    chat_id = data.get("bank_chat_id", callback.message.chat.id)
+    bank_msg_id = data.get("bank_msg_id")
+    panel_type = data.get("bank_panel_type", "panel")
+    from_profile = data.get("bank_from_profile", False)
+    amount = data.get("withdraw_amount")
+    cancel_input_timeout(chat_id, user_id)
+
+    if not amount:
+        await state.clear()
+        return await callback.answer("❌ اطلاعات عملیات نامعتبر شده است. لطفاً دوباره تلاش کنید.", show_alert=True)
+
+    async def _fail(note_text: str):
+        await state.clear()
+        await _bank_edit_main(callback.bot, chat_id, bank_msg_id, user_id, panel_type, note=note_text, with_back=from_profile)
+
+    # 🔁 بازبینی نهایی موجودی بلافاصله پیش از اجرای واقعی، برای جلوگیری از ناهماهنگی احتمالی
+    # ناشی از فاصله زمانی میان نمایش پیش‌نمایش و کلیک کاربر روی دکمه تأیید.
+    async with db_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT bank_savings, is_frozen FROM users WHERE user_id = ?", (user_id,)
+            ) as cur:
+                u = await cur.fetchone()
+            if not u or u["is_frozen"]:
+                return await _fail("❌ حساب شما مسدود (فریز) است.")
+            if amount > u["bank_savings"]:
+                return await _fail(
+                    f"❌ موجودی بانکی شما کافی نیست. سپرده فعلی: <code>₳ {u['bank_savings']}</code>"
+                )
+
             await db.execute(
                 "UPDATE users SET balance = balance + ?, bank_savings = bank_savings - ? WHERE user_id = ?",
                 (amount, amount, user_id),
@@ -6892,14 +7780,11 @@ async def process_bank_withdraw(message: Message, state: FSMContext):
 
     await state.clear()
     await _bank_edit_main(
-        message.bot, chat_id, bank_msg_id, user_id, panel_type,
+        callback.bot, chat_id, bank_msg_id, user_id, panel_type,
         note=f"✅ مبلغ <code>₳ {amount}</code> با موفقیت از بانک به کیف پول شما برداشت شد.",
         with_back=from_profile,
     )
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    await callback.answer()
 
 
 # --- ⏰ پردازش خودکار شبانه سود بانک (ساعت ۰۰:۰۰ به وقت ایران) ---
@@ -7344,8 +8229,99 @@ async def loan_method_collateral(callback: CallbackQuery, state: FSMContext):
                     parse_mode="HTML",
                 )
 
-            interest = _compute_dynamic_interest(amount, settings)
-            total_repayment = amount + int(amount * (interest / 100.0))
+    interest = _compute_dynamic_interest(amount, settings)
+    total_repayment = amount + int(amount * (interest / 100.0))
+
+    # ⚠️ در این مرحله هیچ ثبت وام و هیچ تغییر مالی‌ای هنوز انجام نشده؛ فقط محاسبه و ذخیره در State
+    # صورت می‌گیرد تا پس از تأیید نهایی کاربر روی دکمه، درخواست واقعاً ثبت و برای سوپرادمین ارسال شود.
+    await state.update_data(
+        loan_interest=interest,
+        loan_total_repayment=total_repayment,
+        collateral_amount_final=collateral_amount,
+    )
+
+    preview_text = (
+        "🔍 <b>پیش‌نمایش درخواست وام وثیقه‌ای</b>\n\n"
+        f"💳 مبلغ وام: <code>₳ {amount}</code>\n"
+        f"📈 نرخ سود: <b>{interest}٪</b>\n"
+        f"🔢 تعداد اقساط: <b>{installments}</b>\n"
+        f"🧮 مجموع بازپرداخت: <code>₳ {total_repayment}</code>\n\n"
+        f"🔒 مبلغ وثیقه (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {collateral_amount}</code>\n\n"
+        "⚠️ با تأیید، درخواست وام برای بررسی نهایی برای سوپرادمین ارسال خواهد شد."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ تأیید و ارسال به سوپرادمین", callback_data="loan_collateral_confirm"),
+        InlineKeyboardButton(text="❌ انصراف", callback_data="loan_collateral_cancel"),
+    ]])
+    try:
+        await callback.message.edit_text(preview_text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await state.set_state(LoanForm.waiting_for_collateral_confirm)
+    current_state = await state.get_state()
+    schedule_input_timeout(
+        state, callback.message.chat.id, user_id, current_state,
+        lambda: _default_timeout_notice(callback.bot, callback.message.chat.id, callback.message.message_id),
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(LoanForm.waiting_for_collateral_confirm, F.data == "loan_collateral_cancel")
+async def cb_loan_collateral_preview_cancel(callback: CallbackQuery, state: FSMContext):
+    cancel_input_timeout(callback.message.chat.id, callback.from_user.id)
+    # ❌ انصراف: هیچ ثبت وام و هیچ تغییر مالی‌ای تا این مرحله انجام نشده، فقط State پاک می‌شود.
+    await state.clear()
+    try:
+        await callback.message.edit_text("❌ درخواست وام لغو شد. هیچ ثبت یا تغییر مالی‌ای انجام نشد.")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(LoanForm.waiting_for_collateral_confirm, F.data == "loan_collateral_confirm")
+async def cb_loan_collateral_preview_confirm(callback: CallbackQuery, state: FSMContext):
+    cancel_input_timeout(callback.message.chat.id, callback.from_user.id)
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    amount = data.get("loan_amount")
+    installments = data.get("loan_installments")
+    interest = data.get("loan_interest")
+    total_repayment = data.get("loan_total_repayment")
+    collateral_amount = data.get("collateral_amount_final", 0)
+
+    if amount is None or installments is None or interest is None or total_repayment is None:
+        await state.clear()
+        return await callback.answer("❌ اطلاعات درخواست نامعتبر شده است. لطفاً دوباره تلاش کنید.", show_alert=True)
+
+    # 🔁 بازبینی نهایی موجودی بلافاصله پیش از ثبت واقعی، برای جلوگیری از ناهماهنگی احتمالی
+    # ناشی از فاصله زمانی میان نمایش پیش‌نمایش و کلیک کاربر روی دکمه تأیید.
+    async with db_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT balance, frozen_balance, is_frozen FROM users WHERE user_id = ?", (user_id,)
+            ) as cur:
+                u = await cur.fetchone()
+
+            if not u or u["is_frozen"]:
+                await state.clear()
+                try:
+                    await callback.message.edit_text("❌ حساب شما مسدود (فریز) است.")
+                except Exception:
+                    pass
+                return await callback.answer()
+
+            transferable = max(0, u["balance"] - u["frozen_balance"])
+            if transferable < collateral_amount:
+                await state.clear()
+                try:
+                    await callback.message.edit_text(
+                        f"❌ موجودی آزاد شما برای وثیقه <code>₳ {collateral_amount}</code> این وام کافی نیست.",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                return await callback.answer()
 
             # ⚠️ طبق سیستم جدید وثیقه، در لحظه ثبت درخواست هیچ مبلغی قفل نمی‌شود.
             # مبلغ وثیقه صرفاً محاسبه و روی خود وام ذخیره می‌شود؛ قفل واقعی (frozen_balance)
