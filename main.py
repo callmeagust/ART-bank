@@ -1084,7 +1084,7 @@ def _profile_text(u, user_id: int) -> str:
     safe_name = html.escape(u['full_name'] or "ناشناس")
     return (
         f"👤 نام: {safe_name}\n"
-        f"🆔 شماره حساب: <code>{user_id}</code>\n"
+        f"💳 شماره حساب: <code>{user_id}</code>\n"
         f"💰 موجودی: <code>₳ {u['balance']}</code>\n"
         f"⚡ وضعیت حساب: {status_text}"
     )
@@ -1314,7 +1314,7 @@ COURIER_GUIDE_TEXT = (
     "دستور <code>/courier_orders</code> ابزار اصلی پستچی برای دسترسی به لیست مرسولات و سفارش‌هایی است که آماده تحویل و ارسال هستند. ⚡\n"
     "<b>💡 نکته راهنما:</b> برای برنامه‌ریزی بهتر مسیرها و تحویل به موقع، حتماً پیش از حرکت، لیست سفارش‌ها و مقاصد آن‌ها را در این بخش بررسی کنید.\n"
     "<i>«در بخش سفارش‌های آماده ارسال، اطلاعات زیر در دسترس شما قرار می‌گیرد:»</i>\n"
-    "• <b>🆔 کد سفارش:</b> شناسه اختصاصی هر مرسوله جهت شناسایی و پیگیری ثبت ارسال.\n"
+    "• <b>🔢 کد سفارش:</b> شناسه اختصاصی هر مرسوله جهت شناسایی و پیگیری ثبت ارسال.\n"
     "• <b>📦 جزئیات مرسوله:</b> اطلاعات کالاها و مشخصات مربوط به سفارش جهت تحویل به مشتری.\n"
     "• <b>📍 آدرس و مشخصات مقصد:</b> اطلاعات دقیق محل تحویل و خریدار جهت مسیریابی و هماهنگی.\n\n"
     "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
@@ -1416,6 +1416,23 @@ async def _fetch_public_shops():
             return await cur.fetchall()
 
 
+async def _channel_display_and_link(bot, channel_id: str):
+    """یوزرنیم عمومی فعلی کانال (@username) و لینک ورود به آن را به‌صورت زنده از تلگرام (نه از
+    مقدار ذخیره‌شده در دیتابیس) واکشی می‌کند؛ به همین دلیل اگر فروشنده در آینده یوزرنیم کانال
+    خود را تغییر دهد، در همین لیست هم بلافاصله و بدون نیاز به ثبت مجدد به‌روز می‌شود. اگر کانال
+    یوزرنیم عمومی نداشته باشد یا واکشی با خطا مواجه شود، آیدی خام ذخیره‌شده (و در صورت امکان
+    لینک آن) به‌عنوان جایگزین برگردانده می‌شود."""
+    if not channel_id:
+        return "-", None
+    try:
+        chat = await bot.get_chat(channel_id)
+        if chat.username:
+            return f"@{chat.username}", f"https://t.me/{chat.username}"
+    except Exception:
+        pass
+    return channel_id, _channel_deep_link(channel_id)
+
+
 def _channel_deep_link(channel_id: str):
     """اگر آیدی کانال یک یوزرنیم عمومی باشد (با @ شروع شود)، لینک عمومی t.me/username را
     می‌سازد؛ اگر با فرمت عددی استاندارد سوپرگروه/کانال تلگرام (پیشوند -100) باشد، لینک داخلی
@@ -1435,10 +1452,10 @@ def _channel_deep_link(channel_id: str):
     return None
 
 
-def _render_profile_shop_list_page(shops, page: int):
+async def _render_profile_shop_list_page(shops, page: int, bot):
     """متن و کیبورد صفحه‌بندی‌شدهٔ لیست عمومی فروشگاه‌ها را می‌سازد (مطابق الگوی استاندارد
-    صفحه‌بندی سایر بخش‌های ربات). هر فروشگاه با ایموجی مناسب (📌 اسم، 🆔 آیدی فروشگاه، 🆔 آیدی
-    کانال قابل‌لمس، 🛍 تعداد محصولات) و با یک خط جداکننده از فروشگاه بعدی متمایز می‌شود."""
+    صفحه‌بندی سایر بخش‌های ربات). هر فروشگاه با ایموجی مناسب (📌 اسم، 📢 آیدی کانال قابل‌لمس به
+    شکل @username، 🛍 تعداد محصولات) و با یک خط جداکننده از فروشگاه بعدی متمایز می‌شود."""
     total = len(shops)
     total_pages = max(1, math.ceil(total / LIST_SHOPS_PAGE_SIZE))
     page = max(0, min(page, total_pages - 1))
@@ -1451,15 +1468,13 @@ def _render_profile_shop_list_page(shops, page: int):
         txt += "ℹ️ هیچ فروشگاهی یافت نشد."
     for s in page_items:
         safe_title = html.escape(s["channel_title"] or "بدون نام")
-        channel_id = s["channel_id"]
-        channel_link = _channel_deep_link(channel_id)
+        channel_display, channel_link = await _channel_display_and_link(bot, s["channel_id"])
         if channel_link:
-            channel_line = f"🆔 آیدی کانال: <a href=\"{channel_link}\">{html.escape(channel_id)}</a>\n"
+            channel_line = f"📢 آیدی کانال: <a href=\"{channel_link}\">{html.escape(channel_display)}</a>\n"
         else:
-            channel_line = f"🆔 آیدی کانال: <code>{html.escape(channel_id or '-')}</code>\n"
+            channel_line = f"📢 آیدی کانال: <code>{html.escape(channel_display)}</code>\n"
         txt += (
             f"📌 اسم فروشگاه: <b>{safe_title}</b>\n"
-            f"🆔 آیدی فروشگاه: <code>{s['shop_id']}</code>\n"
             f"{channel_line}"
             f"🛍 محصولات: <code>{s['product_count']}</code>\n"
             "➖➖➖➖➖➖➖➖\n"
@@ -1482,7 +1497,7 @@ async def cb_prof_shop_list(callback: CallbackQuery):
     if not shops:
         await callback.answer("ℹ️ هیچ فروشگاهی یافت نشد.", show_alert=True)
         return
-    txt, kb = _render_profile_shop_list_page(shops, 0)
+    txt, kb = await _render_profile_shop_list_page(shops, 0, callback.bot)
     try:
         await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -1510,7 +1525,7 @@ async def cb_prof_shop_list_page(callback: CallbackQuery):
     if not shops:
         await callback.answer("ℹ️ هیچ فروشگاهی یافت نشد.", show_alert=True)
         return
-    txt, kb = _render_profile_shop_list_page(shops, page)
+    txt, kb = await _render_profile_shop_list_page(shops, page, callback.bot)
     try:
         await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -1529,7 +1544,7 @@ async def cb_prof_shop_list_refresh(callback: CallbackQuery):
     if not shops:
         await callback.answer("ℹ️ هیچ فروشگاهی یافت نشد.", show_alert=True)
         return
-    txt, kb = _render_profile_shop_list_page(shops, page)
+    txt, kb = await _render_profile_shop_list_page(shops, page, callback.bot)
     try:
         await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -9800,8 +9815,8 @@ async def _build_help_pages(user_id: int, group_only: bool = False) -> list:
         "بخش فروشگاه بستری برای تعاملات تجاری کاربران است؛ جایی که می‌توانید خریدهای خود را انجام داده یا کسب‌وکار اختصاصی خود را راه‌اندازی کنید.\n\n"
         "<b>لیست فروشگاه‌ها 📜🏪</b>\n"
         "در این بخش، تمامی فروشگاه‌های فعال سیستم به صورت مرتب و دسته‌بندی‌شده نمایش داده می‌شوند تا بتوانید به راحتی در میان آن‌ها به کاوش بپردازید.\n\n"
-        "•      <b> اطلاعات نمایشی:</b> برای هر فروشگاه، جزئیاتی شامل نام فروشگاه، ایدی فروشگاه و محصولات قابل فروش درج شده است.\n\n"
-        "•      <b> بررسی و انتخاب:</b> با مرور این لیست می‌توانید ویترین فروشگاه‌های مختلف را بررسی کرده و با استفاده از آیدی مربوطه، مستقیماً وارد بخش خرید شوید.\n\n"
+        "•      <b>📢 اطلاعات نمایشی:</b> برای هر فروشگاه، جزئیاتی شامل نام فروشگاه، ایدی فروشگاه و محصولات قابل فروش درج شده است.\n\n"
+        "•      <b>🔍 بررسی و انتخاب:</b> با مرور این لیست می‌توانید ویترین فروشگاه‌های مختلف را بررسی کرده و با استفاده از آیدی مربوطه، مستقیماً وارد بخش خرید شوید.\n\n"
         "<b>ساخت فروشگاه (افتتاح کسب‌وکار) 🏗️✨</b>\n"
         "اگر قصد دارید فروشنده شوید و محصولات خود را به سایر کاربران عرضه کنید، می‌توانید با استفاده از این دستور، فرآیند ثبت و افتتاح فروشگاه اختصاصی خود را آغاز نمایید.\n\n"
         "<b>⚠️ نکته بسیار مهم:</b> افتتاح فروشگاه مستلزم رعایت قوانین و داشتن شرایط خاصی است. لطفاً پیش از ثبت درخواست، تمامی راهنماها و ضوابط مربوط به ایجاد کسب‌وکار را به دقت مطالعه فرمایید تا فرآیند راه‌اندازی با موفقیت انجام شود.\n\n"
