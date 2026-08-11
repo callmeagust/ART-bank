@@ -1345,6 +1345,9 @@ async def cmd_courier_guide(message: Message):
         if not is_courier:
             return
     await message.reply(COURIER_GUIDE_TEXT, parse_mode="HTML")
+
+
+@user_router.callback_query(F.data == "prof_bank")
 async def cb_prof_bank(callback: CallbackQuery):
     """کلید «🏦 بانک آترامنتوم»: پیام پروفایل را به ساختار بانک تبدیل می‌کند — در پیوی نمای کامل
     حساب بانکی (موجودی، سپرده، سود، وام) و در گروه/سوپرگروه نمای خلاصه؛ در هر دو حالت دکمه‌های
@@ -1403,7 +1406,7 @@ async def _fetch_public_shops():
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
-            SELECT s.shop_id, s.channel_title,
+            SELECT s.shop_id, s.channel_id, s.channel_title,
                    (SELECT COUNT(*) FROM products p WHERE p.shop_id = s.shop_id) AS product_count
             FROM shops s
             WHERE s.status = 'APPROVED'
@@ -1413,10 +1416,29 @@ async def _fetch_public_shops():
             return await cur.fetchall()
 
 
+def _channel_deep_link(channel_id: str):
+    """اگر آیدی کانال یک یوزرنیم عمومی باشد (با @ شروع شود)، لینک عمومی t.me/username را
+    می‌سازد؛ اگر با فرمت عددی استاندارد سوپرگروه/کانال تلگرام (پیشوند -100) باشد، لینک داخلی
+    t.me/c/... را می‌سازد تا با لمس آیدی کانال، کاربر مستقیماً وارد آن کانال شود؛ در غیر این
+    صورت None برمی‌گرداند تا آیدی به‌صورت متن ساده (بدون لینک) نمایش داده شود."""
+    if not channel_id:
+        return None
+    if channel_id.startswith("@"):
+        username = channel_id[1:].strip()
+        if username:
+            return f"https://t.me/{username}"
+        return None
+    if channel_id.startswith("-100"):
+        internal_id = channel_id[4:]
+        if internal_id.isdigit():
+            return f"https://t.me/c/{internal_id}"
+    return None
+
+
 def _render_profile_shop_list_page(shops, page: int):
     """متن و کیبورد صفحه‌بندی‌شدهٔ لیست عمومی فروشگاه‌ها را می‌سازد (مطابق الگوی استاندارد
-    صفحه‌بندی سایر بخش‌های ربات). هر فروشگاه با ایموجی مناسب (📌 اسم، 🆔 آیدی، 🛍 تعداد محصولات)
-    و با یک خط جداکننده از فروشگاه بعدی متمایز می‌شود."""
+    صفحه‌بندی سایر بخش‌های ربات). هر فروشگاه با ایموجی مناسب (📌 اسم، 🆔 آیدی فروشگاه، 🆔 آیدی
+    کانال قابل‌لمس، 🛍 تعداد محصولات) و با یک خط جداکننده از فروشگاه بعدی متمایز می‌شود."""
     total = len(shops)
     total_pages = max(1, math.ceil(total / LIST_SHOPS_PAGE_SIZE))
     page = max(0, min(page, total_pages - 1))
@@ -1429,9 +1451,16 @@ def _render_profile_shop_list_page(shops, page: int):
         txt += "ℹ️ هیچ فروشگاهی یافت نشد."
     for s in page_items:
         safe_title = html.escape(s["channel_title"] or "بدون نام")
+        channel_id = s["channel_id"]
+        channel_link = _channel_deep_link(channel_id)
+        if channel_link:
+            channel_line = f"🆔 آیدی کانال: <a href=\"{channel_link}\">{html.escape(channel_id)}</a>\n"
+        else:
+            channel_line = f"🆔 آیدی کانال: <code>{html.escape(channel_id or '-')}</code>\n"
         txt += (
             f"📌 اسم فروشگاه: <b>{safe_title}</b>\n"
             f"🆔 آیدی فروشگاه: <code>{s['shop_id']}</code>\n"
+            f"{channel_line}"
             f"🛍 محصولات: <code>{s['product_count']}</code>\n"
             "➖➖➖➖➖➖➖➖\n"
         )
