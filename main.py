@@ -7558,14 +7558,14 @@ def _bank_panel_text(u) -> str:
 
 def _bank_buttons() -> InlineKeyboardMarkup:
     """چیدمان دکمه‌های نمای سریع بانک (نمای گروه/کوتاه):
-    ردیف ۱: برداشت پول | انتقال پول
+    ردیف ۱: برداشت پول | انتقال پول (انتقال به سپردهٔ بانکی)
     ردیف ۲: 🏆 لیدربرد
     (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render به‌صورت ردیف
     مستقل جدید در انتهای همین کیبورد اضافه می‌شود.)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
-            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_transfer_info"),
+            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_deposit"),
         ],
         [InlineKeyboardButton(text="🏆 لیدربرد", callback_data="bank_leaderboard_open")],
     ])
@@ -7585,20 +7585,19 @@ def _bank_full_text(u) -> str:
 
 def _bank_full_buttons() -> InlineKeyboardMarkup:
     """چیدمان دکمه‌های نمای کامل بانک (نمای پیوی):
-    ردیف ۱: برداشت پول | انتقال پول
+    ردیف ۱: برداشت پول | انتقال پول (انتقال به سپردهٔ بانکی)
     ردیف ۲: 💳 وام‌های آترامنتوم
     ردیف ۳: 🏆 لیدربرد
-    ردیف ۴: ⚙️ مدیریت بانکی
-    (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render در ابتدای همین
-    ردیف آخر - کنار «مدیریت بانکی» - اضافه می‌شود.)"""
+    (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render به‌صورت ردیف
+    مستقل جدید در انتهای همین کیبورد اضافه می‌شود. دکمهٔ «مدیریت بانکی» طبق درخواست کاملاً
+    حذف شده است.)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
-            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_transfer_info"),
+            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_deposit"),
         ],
         [InlineKeyboardButton(text="💳 وام‌های آترامنتوم", callback_data="loan_menu")],
         [InlineKeyboardButton(text="🏆 لیدربرد", callback_data="bank_leaderboard_open")],
-        [InlineKeyboardButton(text="⚙️ مدیریت بانکی", callback_data="bank_manage")],
     ])
 
 
@@ -7678,11 +7677,8 @@ def _append_prof_back_row(kb):
 
 async def _bank_render(user_id: int, panel_type: str, with_back: bool = False):
     """متن و کیبورد صفحه اصلی بانک را بر اساس نوع پنل و موجودی به‌روز کاربر می‌سازد.
-    در صورت with_back=True، دکمه «🔙 برگشت به پروفایل» اضافه می‌شود:
-    - در نمای کامل (full/پیوی): در ابتدای همان ردیف آخر (کنار «⚙️ مدیریت بانکی») قرار می‌گیرد
-      تا دقیقاً به‌صورت «[بازگشت به پروفایل] | [مدیریت بانکی]» نمایش داده شود.
-    - در نمای سریع (panel/گروه): چون ردیف آخر «🏆 لیدربرد» است و نباید با آن ترکیب شود، بازگشت
-      به‌صورت یک ردیف کاملاً مستقل و جدید در انتهای کیبورد اضافه می‌شود."""
+    در صورت with_back=True، دکمه «🔙 برگشت به پروفایل» به‌صورت یک ردیف کاملاً مستقل و جدید در
+    انتهای کیبورد اضافه می‌شود (چه در نمای کامل/پیوی و چه در نمای سریع/گروه)."""
     u = await get_user_data(user_id)
     if not u:
         return None
@@ -7692,11 +7688,7 @@ async def _bank_render(user_id: int, panel_type: str, with_back: bool = False):
         text, kb = _bank_panel_text(u), _bank_buttons()
     if with_back:
         rows = [list(row) for row in kb.inline_keyboard]
-        back_btn = InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home")
-        if panel_type == "full":
-            rows[-1].insert(0, back_btn)
-        else:
-            rows.append([back_btn])
+        rows.append([InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home")])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
     return text, kb
 
@@ -7751,59 +7743,9 @@ async def cmd_bank_full(message: Message):
     await message.reply(text, reply_markup=kb, parse_mode="HTML")
 
 
-def _bank_manage_menu_text() -> str:
-    return (
-        "⚙️ <b>مدیریت بانکی</b>\n\n"
-        "برای واریز پول به سپرده بانکی از دکمهٔ زیر استفاده کنید.\n"
-        "برای برداشت و انتقال پول از دکمه‌های موجود در صفحه اصلی بانک و برای دریافت/تسویه وام "
-        "از بخش «💳 وام‌های آترامنتوم» استفاده کنید."
-    )
-
-
-def _bank_manage_menu_buttons(panel_type: str, from_profile: bool) -> InlineKeyboardMarkup:
-    flag = 1 if from_profile else 0
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 واریز پول", callback_data=f"bank_deposit_go_{panel_type}_{flag}")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"bank_manage_back_{panel_type}_{flag}")],
-    ])
-
-
-@user_router.callback_query(F.data == "bank_manage")
-async def cb_bank_manage(callback: CallbackQuery):
-    """با کلیک روی «⚙️ مدیریت بانکی» زیرمنویی حاوی «📥 واریز پول» و دکمهٔ بازگشت به پنل اصلی
-    بانک نمایش داده می‌شود؛ قابلیت واریز همچنان کاملاً فعال است، صرفاً جای دسترسی به آن از ردیف
-    اول پنل اصلی بانک به این زیرمنو منتقل شده تا چیدمان دقیق درخواستی رعایت شود."""
-    panel_type = _bank_detect_panel_type(callback.message)
-    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
-    try:
-        await callback.message.edit_text(
-            _bank_manage_menu_text(),
-            reply_markup=_bank_manage_menu_buttons(panel_type, from_profile),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@user_router.callback_query(F.data.startswith("bank_manage_back_"))
-async def cb_bank_manage_back(callback: CallbackQuery):
-    """بازگشت از زیرمنوی «مدیریت بانکی» به پنل اصلی بانک."""
-    try:
-        _, _, _, panel_type, flag = callback.data.split("_")
-    except ValueError:
-        panel_type, flag = "panel", "0"
-    await _bank_edit_main(
-        callback.bot, callback.message.chat.id, callback.message.message_id,
-        callback.from_user.id, panel_type, with_back=(flag == "1"),
-    )
-    await callback.answer()
-
-
 async def _bank_start_deposit(callback: CallbackQuery, state: FSMContext, panel_type: str, from_profile: bool):
-    """شروع فرایند واریز به بانک: پیام را به فرم دریافت مبلغ ویرایش می‌کند و در حالت انتظار
-    قرار می‌گیرد. این تابع مشترک هم توسط دکمهٔ قدیمی «bank_deposit» و هم دکمهٔ «📥 واریز پول»
-    داخل زیرمنوی مدیریت بانکی استفاده می‌شود تا منطق واریز فقط یک‌بار نوشته شود."""
+    """شروع فرایند واریز/انتقال به سپردهٔ بانک: پیام را به فرم دریافت مبلغ ویرایش می‌کند و در
+    حالت انتظار قرار می‌گیرد."""
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
     message_id = callback.message.message_id
@@ -7832,21 +7774,11 @@ async def _bank_start_deposit(callback: CallbackQuery, state: FSMContext, panel_
 
 @user_router.callback_query(F.data == "bank_deposit")
 async def cb_bank_deposit(callback: CallbackQuery, state: FSMContext):
+    """دکمهٔ «🔁 انتقال پول» (ردیف اول پنل اصلی بانک، هم در پیوی و هم در گروه): وظیفهٔ این دکمه
+    انتقال مبلغ به سپردهٔ بانکی است (همان عملیات واریز)."""
     panel_type = _bank_detect_panel_type(callback.message)
     from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
     await _bank_start_deposit(callback, state, panel_type, from_profile)
-
-
-@user_router.callback_query(F.data.startswith("bank_deposit_go_"))
-async def cb_bank_deposit_go(callback: CallbackQuery, state: FSMContext):
-    """ورودی واریز از داخل زیرمنوی «مدیریت بانکی»؛ چون کیبورد آن زیرمنو با کیبورد پنل اصلی
-    فرق دارد، نوع پنل (full/panel) و وضعیت ورود از پروفایل مستقیماً از callback_data خوانده
-    می‌شود، نه با حدس زدن از روی تعداد ردیف‌های کیبورد."""
-    try:
-        _, _, _, panel_type, flag = callback.data.split("_")
-    except ValueError:
-        panel_type, flag = "panel", "0"
-    await _bank_start_deposit(callback, state, panel_type, flag == "1")
 
 
 @user_router.callback_query(F.data == "bank_withdraw")
@@ -7875,45 +7807,6 @@ async def cb_bank_withdraw(callback: CallbackQuery, state: FSMContext):
             note="⏳ عملیات برداشت به دلیل عدم دریافت پاسخ در بازه ۱ دقیقه به‌صورت خودکار لغو شد.",
             with_back=from_profile,
         ),
-    )
-    await callback.answer()
-
-
-def _bank_transfer_info_buttons(panel_type: str, from_profile: bool) -> InlineKeyboardMarkup:
-    flag = 1 if from_profile else 0
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"bank_transfer_back_{panel_type}_{flag}")
-    ]])
-
-
-@user_router.callback_query(F.data == "bank_transfer_info")
-async def cb_bank_transfer_info(callback: CallbackQuery):
-    """دکمهٔ «🔁 انتقال پول»: چون انتقال وجه از قبل به‌صورت یک دستور متنی کامل (انتقال آتر/
-    /transfer) پیاده‌سازی شده، این دکمه به‌جای ساخت یک فرایند موازی، همان راهنمای موجود
-    (_transfer_help_text) را نمایش می‌دهد تا کاربر مستقیماً دستور را ارسال کند."""
-    panel_type = _bank_detect_panel_type(callback.message)
-    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
-    try:
-        await callback.message.edit_text(
-            _transfer_help_text(),
-            reply_markup=_bank_transfer_info_buttons(panel_type, from_profile),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@user_router.callback_query(F.data.startswith("bank_transfer_back_"))
-async def cb_bank_transfer_back(callback: CallbackQuery):
-    """بازگشت از راهنمای انتقال پول به پنل اصلی بانک."""
-    try:
-        _, _, _, panel_type, flag = callback.data.split("_")
-    except ValueError:
-        panel_type, flag = "panel", "0"
-    await _bank_edit_main(
-        callback.bot, callback.message.chat.id, callback.message.message_id,
-        callback.from_user.id, panel_type, with_back=(flag == "1"),
     )
     await callback.answer()
 
