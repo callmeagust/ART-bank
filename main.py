@@ -2067,6 +2067,20 @@ async def process_transfer_request(message: Message, state: FSMContext, to_user_
     )
 
 
+def _transfer_help_text() -> str:
+    """متن راهنمای روش‌های انتقال آتر؛ هم در دستور متنی «انتقال آتر» و هم در دکمهٔ شیشه‌ای
+    «🔁 انتقال پول» پنل بانک استفاده می‌شود تا منطق راهنما یک‌بار نوشته و در هر دو جا بازاستفاده شود."""
+    return (
+        "📖 <b>روش‌های انتقال آتر:</b>\n\n"
+        "1️⃣ <b>انتقال با آیدی عددی:</b>\n"
+        "<code>انتقال آتر 123456789 500</code>\n\n"
+        "2️⃣ <b>انتقال با نام کاربری:</b>\n"
+        "<code>انتقال آتر @username 500</code>\n\n"
+        "3️⃣ <b>انتقال با ریپلای روی پیام فرد:</b>\n"
+        "ریپلای روی پیام شخص و نوشتن: <code>انتقال آتر 500</code>"
+    )
+
+
 @user_router.message(Command("transfer"))
 @user_router.message(F.text.startswith("انتقال آتر"))
 async def cmd_transfer(message: Message, state: FSMContext):
@@ -2086,16 +2100,7 @@ async def cmd_transfer(message: Message, state: FSMContext):
 
     # راهنما در صورت عدم وارد کردن آرگومان
     if not text and not message.reply_to_message:
-        return await message.reply(
-            "📖 <b>روش‌های انتقال آتر:</b>\n\n"
-            "1️⃣ <b>انتقال با آیدی عددی:</b>\n"
-            "<code>انتقال آتر 123456789 500</code>\n\n"
-            "2️⃣ <b>انتقال با نام کاربری:</b>\n"
-            "<code>انتقال آتر @username 500</code>\n\n"
-            "3️⃣ <b>انتقال با ریپلای روی پیام فرد:</b>\n"
-            "ریپلای روی پیام شخص و نوشتن: <code>انتقال آتر 500</code>",
-            parse_mode="HTML"
-        )
+        return await message.reply(_transfer_help_text(), parse_mode="HTML")
 
     # حالت سوم: ریپلای روی پیام فرد
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -2262,6 +2267,118 @@ async def cancel_transfer_cb(callback: CallbackQuery, state: FSMContext):
     cancel_input_timeout(callback.message.chat.id, from_user)
     await state.clear()
     await callback.message.edit_text("❌ انتقال وجه لغو شد.")
+
+
+# --- 🏆 لیدربرد بانک آترامنتوم (۲۵ ثروتمندترین کاربر) ---
+
+LEADERBOARD_LIMIT = 25
+LEADERBOARD_PAGE_SIZE = 13  # ۲۵ نفر در ۲ صفحه (۱۳ + ۱۲)، طبق الزام صفحه‌بندی درخواستی
+
+
+def _leaderboard_rank_label(rank: int) -> str:
+    """برچسب رتبه: نفرات اول تا سوم مدال (🥇🥈🥉) و بقیه شماره رتبه؛ کاملاً پویا نسبت به
+    ترتیب فعلی لیست (اگر جایگاه‌ها جابه‌جا شوند، مدال‌ها خودکار به نفر جدید تعلق می‌گیرند)."""
+    if rank == 1:
+        return "🥇"
+    if rank == 2:
+        return "🥈"
+    if rank == 3:
+        return "🥉"
+    return f"#{rank}"
+
+
+async def _fetch_leaderboard_rows():
+    """۲۵ نفر از ثروتمندترین کاربران ربات را بر اساس دارایی کل (موجودی حساب + موجودی
+    سپرده‌گذاری بانک برای سود + پول‌های فریز شده) استخراج می‌کند. حساب «خزانه مرکزی» به‌طور
+    کامل از لیست حذف می‌شود، اما کاربران فریزشده طبق الزام همچنان محاسبه و نمایش داده می‌شوند.
+    کوئری در همان لحظهٔ فراخوانی روی دیتابیس اجرا می‌شود تا رتبه‌بندی کاملاً پویا و لحظه‌ای باشد."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT user_id, username, full_name, is_frozen,
+                   (balance + bank_savings + frozen_balance) AS total_assets
+            FROM users
+            WHERE user_id != ?
+            ORDER BY total_assets DESC, user_id ASC
+            LIMIT ?
+            """,
+            (TREASURY_USER_ID, LEADERBOARD_LIMIT),
+        ) as cur:
+            return await cur.fetchall()
+
+
+def _render_leaderboard_page(rows, page: int):
+    """متن و کیبورد صفحه‌بندی‌شدهٔ لیدربرد را می‌سازد (حداکثر ۱۳ نفر در هر صفحه، با همان
+    منطق استاندارد صفحه‌بندی موجود در ربات: _build_pagination_keyboard). برای هر کاربر فقط
+    نام، @یوزرنیم (در صورت وجود) و موجودی کل (مجموع پول‌ها) نمایش داده می‌شود."""
+    total = len(rows)
+    total_pages = max(1, math.ceil(total / LEADERBOARD_PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    start = page * LEADERBOARD_PAGE_SIZE
+    page_items = rows[start:start + LEADERBOARD_PAGE_SIZE]
+
+    txt = f"🏆 <b>لیدربرد بانک آترامنتوم (صفحه {page + 1} از {total_pages})</b>\n"
+    txt += f"👑 {total} نفر از ثروتمندترین کاربران ربات بر اساس دارایی کل\n\n"
+
+    for idx, u in enumerate(page_items, start=start + 1):
+        label = _leaderboard_rank_label(idx)
+        safe_full_name = html.escape(u["full_name"] or "ناشناس")
+        username_part = f" (@{html.escape(u['username'])})" if u["username"] else ""
+        frozen_tag = " ❄️" if u["is_frozen"] else ""
+        txt += (
+            f"{label} <b>{safe_full_name}</b>{username_part}{frozen_tag}\n"
+            f"💰 موجودی: <code>₳ {u['total_assets']}</code>\n"
+            f"------------------------------\n"
+        )
+
+    kb = _build_pagination_keyboard(page, total_pages, "lb_page", refresh_data="lb_refresh")
+    return txt, kb
+
+
+@user_router.message(Command("leaderboard"))
+async def cmd_leaderboard(message: Message):
+    """دستور لیدربرد: هم در پیوی و هم در گروه فعال است (بدون محدودیت is_private) و ۲۵ نفر از
+    ثروتمندترین کاربران ربات را بر اساس دارایی کل، به‌صورت کاملاً پویا و صفحه‌بندی‌شده در ۲
+    صفحه نمایش می‌دهد."""
+    rows = await _fetch_leaderboard_rows()
+    if not rows:
+        return await message.reply("ℹ️ فعلاً کاربری برای نمایش در لیدربرد وجود ندارد.")
+    txt, kb = _render_leaderboard_page(rows, 0)
+    await message.reply(txt, reply_markup=kb, parse_mode="HTML")
+
+
+@user_router.callback_query(F.data == "lb_page_noop")
+async def cb_leaderboard_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "lb_refresh")
+async def cb_leaderboard_refresh(callback: CallbackQuery):
+    page = _extract_current_page(callback.message.text or "")
+    rows = await _fetch_leaderboard_rows()
+    if not rows:
+        return await callback.answer("ℹ️ فعلاً کاربری برای نمایش در لیدربرد وجود ندارد.", show_alert=True)
+    txt, kb = _render_leaderboard_page(rows, page)
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer("🔄 لیدربرد به‌روزرسانی شد.")
+
+
+@user_router.callback_query(F.data.startswith("lb_page_"))
+async def cb_leaderboard_page(callback: CallbackQuery):
+    page = int(callback.data.split("_")[2])
+    rows = await _fetch_leaderboard_rows()
+    if not rows:
+        return await callback.answer("ℹ️ فعلاً کاربری برای نمایش در لیدربرد وجود ندارد.", show_alert=True)
+    txt, kb = _render_leaderboard_page(rows, page)
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
 
 
 # --- بخش مدیریت و ادمین ---
@@ -7440,10 +7557,18 @@ def _bank_panel_text(u) -> str:
 
 
 def _bank_buttons() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📥 واریز پول", callback_data="bank_deposit"),
-        InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
-    ]])
+    """چیدمان دکمه‌های نمای سریع بانک (نمای گروه/کوتاه):
+    ردیف ۱: برداشت پول | انتقال پول
+    ردیف ۲: 🏆 لیدربرد
+    (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render به‌صورت ردیف
+    مستقل جدید در انتهای همین کیبورد اضافه می‌شود.)"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
+            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_transfer_info"),
+        ],
+        [InlineKeyboardButton(text="🏆 لیدربرد", callback_data="bank_leaderboard_open")],
+    ])
 
 
 def _bank_full_text(u) -> str:
@@ -7459,13 +7584,21 @@ def _bank_full_text(u) -> str:
 
 
 def _bank_full_buttons() -> InlineKeyboardMarkup:
+    """چیدمان دکمه‌های نمای کامل بانک (نمای پیوی):
+    ردیف ۱: برداشت پول | انتقال پول
+    ردیف ۲: 💳 وام‌های آترامنتوم
+    ردیف ۳: 🏆 لیدربرد
+    ردیف ۴: ⚙️ مدیریت بانکی
+    (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render در ابتدای همین
+    ردیف آخر - کنار «مدیریت بانکی» - اضافه می‌شود.)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📥 واریز پول", callback_data="bank_deposit"),
             InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
+            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_transfer_info"),
         ],
         [InlineKeyboardButton(text="💳 وام‌های آترامنتوم", callback_data="loan_menu")],
-        [InlineKeyboardButton(text="⚙️ مدیریت حساب بانکی", callback_data="bank_manage")],
+        [InlineKeyboardButton(text="🏆 لیدربرد", callback_data="bank_leaderboard_open")],
+        [InlineKeyboardButton(text="⚙️ مدیریت بانکی", callback_data="bank_manage")],
     ])
 
 
@@ -7509,10 +7642,13 @@ def _bank_confirm_buttons(confirm_data: str, cancel_data: str) -> InlineKeyboard
 
 
 def _bank_detect_panel_type(message: Message) -> str:
-    """نوع پنل بانکی (کامل یا سریع) را از روی تعداد ردیف‌های دکمه پیام فعلی تشخیص می‌دهد."""
+    """نوع پنل بانکی (کامل یا سریع) را از روی وجود دکمهٔ اختصاصی «💳 وام‌های آترامنتوم» در
+    کیبورد پیام فعلی تشخیص می‌دهد؛ این دکمه فقط در نمای کامل (پیوی) وجود دارد. (پیش‌تر این
+    تشخیص بر اساس تعداد ردیف‌های کیبورد بود، اما پس از افزودن ردیف‌های لیدربرد/بازگشت به هر دو
+    نما، تعداد ردیف‌ها دیگر شاخص قابل‌اتکایی نبود؛ به همین دلیل معیار به یک دکمهٔ اختصاصی
+    تغییر یافت.)"""
     try:
-        rows = message.reply_markup.inline_keyboard
-        return "full" if len(rows) > 1 else "panel"
+        return "full" if _kb_has_callback(message.reply_markup, "loan_menu") else "panel"
     except Exception:
         return "panel"
 
@@ -7542,8 +7678,11 @@ def _append_prof_back_row(kb):
 
 async def _bank_render(user_id: int, panel_type: str, with_back: bool = False):
     """متن و کیبورد صفحه اصلی بانک را بر اساس نوع پنل و موجودی به‌روز کاربر می‌سازد.
-    در صورت with_back=True، دکمه «🔙 برگشت به پروفایل» به همان ردیف آخر کیبورد اضافه می‌شود
-    (بدون افزودن ردیف جدید) تا منطق تشخیص نوع پنل (_bank_detect_panel_type) دست‌نخورده بماند."""
+    در صورت with_back=True، دکمه «🔙 برگشت به پروفایل» اضافه می‌شود:
+    - در نمای کامل (full/پیوی): در ابتدای همان ردیف آخر (کنار «⚙️ مدیریت بانکی») قرار می‌گیرد
+      تا دقیقاً به‌صورت «[بازگشت به پروفایل] | [مدیریت بانکی]» نمایش داده شود.
+    - در نمای سریع (panel/گروه): چون ردیف آخر «🏆 لیدربرد» است و نباید با آن ترکیب شود، بازگشت
+      به‌صورت یک ردیف کاملاً مستقل و جدید در انتهای کیبورد اضافه می‌شود."""
     u = await get_user_data(user_id)
     if not u:
         return None
@@ -7553,7 +7692,11 @@ async def _bank_render(user_id: int, panel_type: str, with_back: bool = False):
         text, kb = _bank_panel_text(u), _bank_buttons()
     if with_back:
         rows = [list(row) for row in kb.inline_keyboard]
-        rows[-1].append(InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home"))
+        back_btn = InlineKeyboardButton(text="🔙 برگشت به پروفایل", callback_data="prof_home")
+        if panel_type == "full":
+            rows[-1].insert(0, back_btn)
+        else:
+            rows.append([back_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
     return text, kb
 
@@ -7585,10 +7728,11 @@ async def cmd_bank_panel(message: Message):
     """این دستور متنی هم در گروه و هم در پیوی فعال است."""
     user_id = message.from_user.id
     await sync_user(user_id, message.from_user.username, message.from_user.full_name)
-    u = await get_user_data(user_id)
-    if not u:
+    rendered = await _bank_render(user_id, "panel", with_back=True)
+    if not rendered:
         return await message.reply("❌ حساب شما یافت نشد.")
-    await message.reply(_bank_panel_text(u), reply_markup=_bank_buttons(), parse_mode="HTML")
+    text, kb = rendered
+    await message.reply(text, reply_markup=kb, parse_mode="HTML")
 
 
 @user_router.message(Command("bank"))
@@ -7600,28 +7744,69 @@ async def cmd_bank_full(message: Message):
         return
     user_id = message.from_user.id
     await sync_user(user_id, message.from_user.username, message.from_user.full_name)
-    rendered = await _bank_render(user_id, "full")
+    rendered = await _bank_render(user_id, "full", with_back=True)
     if not rendered:
         return await message.reply("❌ حساب شما یافت نشد.")
     text, kb = rendered
     await message.reply(text, reply_markup=kb, parse_mode="HTML")
 
 
-@user_router.callback_query(F.data == "bank_manage")
-async def cb_bank_manage(callback: CallbackQuery):
-    await callback.answer(
-        "⚙️ برای واریز/برداشت از دکمه‌های مربوطه و برای وام از بخش «وام‌های آترامنتوم» استفاده کنید.",
-        show_alert=True,
+def _bank_manage_menu_text() -> str:
+    return (
+        "⚙️ <b>مدیریت بانکی</b>\n\n"
+        "برای واریز پول به سپرده بانکی از دکمهٔ زیر استفاده کنید.\n"
+        "برای برداشت و انتقال پول از دکمه‌های موجود در صفحه اصلی بانک و برای دریافت/تسویه وام "
+        "از بخش «💳 وام‌های آترامنتوم» استفاده کنید."
     )
 
 
-@user_router.callback_query(F.data == "bank_deposit")
-async def cb_bank_deposit(callback: CallbackQuery, state: FSMContext):
+def _bank_manage_menu_buttons(panel_type: str, from_profile: bool) -> InlineKeyboardMarkup:
+    flag = 1 if from_profile else 0
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 واریز پول", callback_data=f"bank_deposit_go_{panel_type}_{flag}")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"bank_manage_back_{panel_type}_{flag}")],
+    ])
+
+
+@user_router.callback_query(F.data == "bank_manage")
+async def cb_bank_manage(callback: CallbackQuery):
+    """با کلیک روی «⚙️ مدیریت بانکی» زیرمنویی حاوی «📥 واریز پول» و دکمهٔ بازگشت به پنل اصلی
+    بانک نمایش داده می‌شود؛ قابلیت واریز همچنان کاملاً فعال است، صرفاً جای دسترسی به آن از ردیف
+    اول پنل اصلی بانک به این زیرمنو منتقل شده تا چیدمان دقیق درخواستی رعایت شود."""
+    panel_type = _bank_detect_panel_type(callback.message)
+    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
+    try:
+        await callback.message.edit_text(
+            _bank_manage_menu_text(),
+            reply_markup=_bank_manage_menu_buttons(panel_type, from_profile),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("bank_manage_back_"))
+async def cb_bank_manage_back(callback: CallbackQuery):
+    """بازگشت از زیرمنوی «مدیریت بانکی» به پنل اصلی بانک."""
+    try:
+        _, _, _, panel_type, flag = callback.data.split("_")
+    except ValueError:
+        panel_type, flag = "panel", "0"
+    await _bank_edit_main(
+        callback.bot, callback.message.chat.id, callback.message.message_id,
+        callback.from_user.id, panel_type, with_back=(flag == "1"),
+    )
+    await callback.answer()
+
+
+async def _bank_start_deposit(callback: CallbackQuery, state: FSMContext, panel_type: str, from_profile: bool):
+    """شروع فرایند واریز به بانک: پیام را به فرم دریافت مبلغ ویرایش می‌کند و در حالت انتظار
+    قرار می‌گیرد. این تابع مشترک هم توسط دکمهٔ قدیمی «bank_deposit» و هم دکمهٔ «📥 واریز پول»
+    داخل زیرمنوی مدیریت بانکی استفاده می‌شود تا منطق واریز فقط یک‌بار نوشته شود."""
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
     message_id = callback.message.message_id
-    panel_type = _bank_detect_panel_type(callback.message)
-    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
 
     try:
         await callback.message.edit_text(_bank_deposit_prompt_text(), parse_mode="HTML")
@@ -7643,6 +7828,25 @@ async def cb_bank_deposit(callback: CallbackQuery, state: FSMContext):
         ),
     )
     await callback.answer()
+
+
+@user_router.callback_query(F.data == "bank_deposit")
+async def cb_bank_deposit(callback: CallbackQuery, state: FSMContext):
+    panel_type = _bank_detect_panel_type(callback.message)
+    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
+    await _bank_start_deposit(callback, state, panel_type, from_profile)
+
+
+@user_router.callback_query(F.data.startswith("bank_deposit_go_"))
+async def cb_bank_deposit_go(callback: CallbackQuery, state: FSMContext):
+    """ورودی واریز از داخل زیرمنوی «مدیریت بانکی»؛ چون کیبورد آن زیرمنو با کیبورد پنل اصلی
+    فرق دارد، نوع پنل (full/panel) و وضعیت ورود از پروفایل مستقیماً از callback_data خوانده
+    می‌شود، نه با حدس زدن از روی تعداد ردیف‌های کیبورد."""
+    try:
+        _, _, _, panel_type, flag = callback.data.split("_")
+    except ValueError:
+        panel_type, flag = "panel", "0"
+    await _bank_start_deposit(callback, state, panel_type, flag == "1")
 
 
 @user_router.callback_query(F.data == "bank_withdraw")
@@ -7671,6 +7875,126 @@ async def cb_bank_withdraw(callback: CallbackQuery, state: FSMContext):
             note="⏳ عملیات برداشت به دلیل عدم دریافت پاسخ در بازه ۱ دقیقه به‌صورت خودکار لغو شد.",
             with_back=from_profile,
         ),
+    )
+    await callback.answer()
+
+
+def _bank_transfer_info_buttons(panel_type: str, from_profile: bool) -> InlineKeyboardMarkup:
+    flag = 1 if from_profile else 0
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"bank_transfer_back_{panel_type}_{flag}")
+    ]])
+
+
+@user_router.callback_query(F.data == "bank_transfer_info")
+async def cb_bank_transfer_info(callback: CallbackQuery):
+    """دکمهٔ «🔁 انتقال پول»: چون انتقال وجه از قبل به‌صورت یک دستور متنی کامل (انتقال آتر/
+    /transfer) پیاده‌سازی شده، این دکمه به‌جای ساخت یک فرایند موازی، همان راهنمای موجود
+    (_transfer_help_text) را نمایش می‌دهد تا کاربر مستقیماً دستور را ارسال کند."""
+    panel_type = _bank_detect_panel_type(callback.message)
+    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
+    try:
+        await callback.message.edit_text(
+            _transfer_help_text(),
+            reply_markup=_bank_transfer_info_buttons(panel_type, from_profile),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("bank_transfer_back_"))
+async def cb_bank_transfer_back(callback: CallbackQuery):
+    """بازگشت از راهنمای انتقال پول به پنل اصلی بانک."""
+    try:
+        _, _, _, panel_type, flag = callback.data.split("_")
+    except ValueError:
+        panel_type, flag = "panel", "0"
+    await _bank_edit_main(
+        callback.bot, callback.message.chat.id, callback.message.message_id,
+        callback.from_user.id, panel_type, with_back=(flag == "1"),
+    )
+    await callback.answer()
+
+
+def _leaderboard_bank_keyboard(page: int, total_pages: int, panel_type: str, from_profile: bool) -> InlineKeyboardMarkup:
+    """کیبورد صفحه‌بندی لیدربرد وقتی از داخل پنل بانک باز شده: علاوه بر پیمایش صفحه‌ها، یک
+    دکمهٔ «🔙 بازگشت به بانک» برای بازگشت به همان پیام پنل بانک نیز اضافه می‌کند. context (نوع
+    پنل و اینکه از پروفایل وارد شده یا نه) در همان callback_data حمل می‌شود تا در تمام صفحات
+    حفظ بماند."""
+    flag = 1 if from_profile else 0
+    nav_row = []
+    if total_pages > 1:
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(
+                text="◀️ صفحه قبل", callback_data=f"banklb_page_{page - 1}_{panel_type}_{flag}",
+            ))
+        nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="banklb_noop"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton(
+                text="صفحه بعد ▶️", callback_data=f"banklb_page_{page + 1}_{panel_type}_{flag}",
+            ))
+    rows = [nav_row] if nav_row else []
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به بانک", callback_data=f"banklb_back_{panel_type}_{flag}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@user_router.callback_query(F.data == "bank_leaderboard_open")
+async def cb_bank_leaderboard_open(callback: CallbackQuery):
+    """دکمهٔ «🏆 لیدربرد» در پنل بانک: همان تابع نمایش لیدربرد (_fetch_leaderboard_rows و
+    _render_leaderboard_page) را که برای دستور /leaderboard ساخته شده فراخوانی می‌کند و صفحهٔ
+    اول را با یک کیبورد اختصاصی (شامل دکمهٔ بازگشت به بانک) داخل همان پیام بانک نمایش می‌دهد."""
+    panel_type = _bank_detect_panel_type(callback.message)
+    from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
+    rows = await _fetch_leaderboard_rows()
+    if not rows:
+        return await callback.answer("ℹ️ فعلاً کاربری برای نمایش در لیدربرد وجود ندارد.", show_alert=True)
+    txt, _ = _render_leaderboard_page(rows, 0)
+    total_pages = max(1, math.ceil(len(rows) / LEADERBOARD_PAGE_SIZE))
+    kb = _leaderboard_bank_keyboard(0, total_pages, panel_type, from_profile)
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "banklb_noop")
+async def cb_banklb_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("banklb_page_"))
+async def cb_banklb_page(callback: CallbackQuery):
+    try:
+        _, _, page_str, panel_type, flag = callback.data.split("_")
+        page = int(page_str)
+    except ValueError:
+        return await callback.answer()
+    rows = await _fetch_leaderboard_rows()
+    if not rows:
+        return await callback.answer("ℹ️ فعلاً کاربری برای نمایش در لیدربرد وجود ندارد.", show_alert=True)
+    total_pages = max(1, math.ceil(len(rows) / LEADERBOARD_PAGE_SIZE))
+    txt, _ = _render_leaderboard_page(rows, page)
+    kb = _leaderboard_bank_keyboard(page, total_pages, panel_type, flag == "1")
+    try:
+        await callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("banklb_back_"))
+async def cb_banklb_back(callback: CallbackQuery):
+    """بازگشت از نمای لیدربرد (که داخل پیام بانک باز شده) به پنل اصلی بانک."""
+    try:
+        _, _, panel_type, flag = callback.data.split("_")
+    except ValueError:
+        panel_type, flag = "panel", "0"
+    await _bank_edit_main(
+        callback.bot, callback.message.chat.id, callback.message.message_id,
+        callback.from_user.id, panel_type, with_back=(flag == "1"),
     )
     await callback.answer()
 
