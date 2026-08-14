@@ -47,6 +47,30 @@ USERS_PER_PAGE = 10  # تعداد کاربران در هر صفحه پنل مد�
 # ⚙️ آیدی عددی کانال خصوصی بکاپ تلگرام شما
 BACKUP_CHANNEL_ID = -1003971216432
 
+
+def _fmt_money(amount) -> str:
+    """اعداد پولی را برای نمایش راحت‌تر، سه‌رقم سه‌رقم (از راست به چپ) با کاما (,) جدا می‌کند؛
+    مثلاً 1234567 -> 1,234,567. در تمام بخش‌های ربات که مبلغی نمایش داده می‌شود استفاده می‌گردد.
+    اعداد اعشاری نیز پشتیبانی می‌شوند (بدون گرد کردن غیرضروری) و مقدار نامعتبر بدون تغییر و
+    خام بازگردانده می‌شود تا هیچ خطایی در نمایش پیام‌ها رخ ندهد."""
+    try:
+        if isinstance(amount, bool):
+            raise TypeError
+        if isinstance(amount, int):
+            return f"{amount:,}"
+        if isinstance(amount, float):
+            if amount == int(amount):
+                return f"{int(amount):,}"
+            return f"{amount:,.2f}".rstrip("0").rstrip(".")
+        # رشته یا سایر انواع عددی: تلاش برای تبدیل به عدد
+        num = float(amount)
+        if num == int(num):
+            return f"{int(num):,}"
+        return f"{num:,.2f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(amount)
+
+
 # --- 🏛 سیستم مالی جدید: خزانه مرکزی، بانک آترامنتوم و وام پویا ---
 # طبق درخواست، این دو متغیر به‌صورت جداگانه تعریف می‌شوند تا منطق مالی خزانه
 # (که صرفاً یک حساب در جدول users است) از منطق دسترسی مدیریتی (سوپرادمین) تفکیک شود.
@@ -262,9 +286,9 @@ def _group_frozen_warning_page(normal_count: int, frozen_members, page: int, g_n
         f"👤 تعداد اعضای فعال (بدون فریز): <code>{normal_count}</code>\n"
         f"❄️ تعداد اعضای فریز: <code>{frozen_count}</code>\n"
         f"👥 گروه/دسته‌بندی: <b>{safe_g_name}</b>\n"
-        f"💰 مبلغ فردی: <code>₳ {per_amount}</code>\n"
-        f"🧮 مجموع (در صورت شامل کردن فریزها): <code>₳ {total_all}</code>\n"
-        f"🧮 مجموع (در صورت رد کردن فریزها): <code>₳ {total_normal_only}</code>\n\n"
+        f"💰 مبلغ فردی: <code>₳ {_fmt_money(per_amount)}</code>\n"
+        f"🧮 مجموع (در صورت شامل کردن فریزها): <code>₳ {_fmt_money(total_all)}</code>\n"
+        f"🧮 مجموع (در صورت رد کردن فریزها): <code>₳ {_fmt_money(total_normal_only)}</code>\n\n"
         f"❄️ <b>لیست کاربران فریز:</b>\n"
     )
     for m in page_items:
@@ -880,7 +904,7 @@ async def get_users_page(page: int):
         text += (
             f"<b>{idx}. {safe_full_name}</b>\n"
             f"شماره حساب: <code>{u['user_id']}</code>\n"
-            f"موجودی: <code>₳ {u['balance']}</code>\n"
+            f"موجودی: <code>₳ {_fmt_money(u['balance'])}</code>\n"
             f"گروه: <b>{safe_group_name}</b>\n"
             f"------------------------------\n"
         )
@@ -1085,7 +1109,7 @@ def _profile_text(u, user_id: int) -> str:
     return (
         f"👤 نام: {safe_name}\n"
         f"💳 شماره حساب: <code>{user_id}</code>\n"
-        f"💰 موجودی: <code>₳ {u['balance']}</code>\n"
+        f"💰 موجودی: <code>₳ {_fmt_money(u['balance'])}</code>\n"
         f"⚡ وضعیت حساب: {status_text}"
     )
 
@@ -1705,6 +1729,10 @@ def _profile_assets_menu_buttons() -> InlineKeyboardMarkup:
     ])
 
 
+def _profile_assets_menu_text() -> str:
+    return "📦 <b>دارایی‌ها و مرسولات</b>\n\nیکی از گزینه‌های زیر را انتخاب کنید:"
+
+
 @user_router.callback_query(F.data == "prof_assets")
 async def cb_prof_assets(callback: CallbackQuery):
     """کلید «📦 لیست دارایی‌ها»: صفحه میانی با دو گزینهٔ «لیست دارایی‌های موجود» و «پیگیری
@@ -1714,9 +1742,10 @@ async def cb_prof_assets(callback: CallbackQuery):
     if owner_id is not None and callback.from_user.id != owner_id:
         await callback.answer()
         return
-    txt = "📦 <b>دارایی‌ها و مرسولات</b>\n\nیکی از گزینه‌های زیر را انتخاب کنید:"
     try:
-        await callback.message.edit_text(txt, reply_markup=_profile_assets_menu_buttons(), parse_mode="HTML")
+        await callback.message.edit_text(
+            _profile_assets_menu_text(), reply_markup=_profile_assets_menu_buttons(), parse_mode="HTML"
+        )
     except Exception:
         pass
     await callback.answer()
@@ -1803,7 +1832,7 @@ async def cb_profile_asset_detail(callback: CallbackQuery):
     caption = (
         f"🛍 <b>{safe_title}</b>\n\n"
         f"📝 توضیحات: {safe_desc}\n"
-        f"💰 قیمت: <code>₳ {order['price']}</code>\n"
+        f"💰 قیمت: <code>₳ {_fmt_money(order['price'])}</code>\n"
         f"🏪 فروشگاه: {safe_shop}\n"
         f"🔐 کد پیگیری: <code>{order['code_10']}</code>\n"
         f"⚡ وضعیت: {status_txt}"
@@ -1863,6 +1892,14 @@ def _track_back_buttons() -> InlineKeyboardMarkup:
     ]])
 
 
+def _track_prompt_buttons() -> InlineKeyboardMarkup:
+    """کیبورد یک‌دکمه‌ای «❌ لغو» برای مرحلهٔ ورود کد پیگیری، تا کاربر بدون نیاز به ارسال کد یا
+    انتظار برای تایم‌اوت ۱ دقیقه‌ای، بتواند فوراً به صفحهٔ قبلی (دارایی‌ها و مرسولات) بازگردد."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❌ لغو", callback_data="track_cancel"),
+    ]])
+
+
 @user_router.callback_query(F.data == "prof_track_start")
 async def cb_prof_track_start(callback: CallbackQuery, state: FSMContext):
     """کلید «📮 پیگیری مرسوله»: از کاربر می‌خواهد کد پیگیری ۱۰ رقمی مرسولهٔ خود را با ریپلای روی
@@ -1879,7 +1916,9 @@ async def cb_prof_track_start(callback: CallbackQuery, state: FSMContext):
     orig_reply_id = callback.message.reply_to_message.message_id if callback.message.reply_to_message else None
 
     try:
-        await callback.message.edit_text(_track_parcel_prompt_text(), parse_mode="HTML")
+        await callback.message.edit_text(
+            _track_parcel_prompt_text(), reply_markup=_track_prompt_buttons(), parse_mode="HTML"
+        )
     except Exception:
         pass
 
@@ -1897,6 +1936,25 @@ async def cb_prof_track_start(callback: CallbackQuery, state: FSMContext):
             reply_markup=_track_back_buttons(), parse_mode="HTML",
         ),
     )
+    await callback.answer()
+
+
+@user_router.callback_query(TrackForm.waiting_for_code, F.data == "track_cancel")
+async def cb_track_cancel(callback: CallbackQuery, state: FSMContext):
+    """دکمهٔ «❌ لغو» در مرحلهٔ ورود کد پیگیری مرسوله: عملیات را لغو کرده و با ویرایش همان پیام،
+    فوراً به صفحهٔ قبلی همان دستور (منوی «دارایی‌ها و مرسولات») بازمی‌گردد."""
+    data = await state.get_data()
+    if callback.from_user.id != data.get("track_user"):
+        return await callback.answer("❌ فقط خودتان می‌توانید لغو کنید.", show_alert=True)
+    chat_id = data.get("track_chat_id", callback.message.chat.id)
+    cancel_input_timeout(chat_id, callback.from_user.id)
+    await state.clear()
+    try:
+        await callback.message.edit_text(
+            _profile_assets_menu_text(), reply_markup=_profile_assets_menu_buttons(), parse_mode="HTML"
+        )
+    except Exception:
+        pass
     await callback.answer()
 
 
@@ -1919,6 +1977,7 @@ async def process_track_parcel_code(message: Message, state: FSMContext):
             await message.bot.edit_message_text(
                 chat_id=chat_id, message_id=prompt_msg_id,
                 text="⚠️ لطفاً روی همین پیام ریپلای کرده و کد پیگیری مرسوله را ارسال کنید.\n\n" + _track_parcel_prompt_text(),
+                reply_markup=_track_prompt_buttons(),
                 parse_mode="HTML",
             )
         except Exception:
@@ -1970,7 +2029,7 @@ async def process_track_parcel_code(message: Message, state: FSMContext):
     caption = (
         f"🛍 <b>{safe_title}</b>\n\n"
         f"📝 توضیحات: {safe_desc}\n"
-        f"💰 قیمت: <code>₳ {order['price']}</code>\n"
+        f"💰 قیمت: <code>₳ {_fmt_money(order['price'])}</code>\n"
         f"🏪 فروشگاه: {safe_shop}\n"
         f"🔐 کد پیگیری: <code>{order['code_10']}</code>\n"
         f"⚡ وضعیت: {status_txt}"
@@ -2054,7 +2113,7 @@ async def process_transfer_request(message: Message, state: FSMContext, to_user_
     confirm_msg = await message.reply(
         f"⚠️ تأییدیه انتقال آتر\n"
         f"دریافت‌کننده: {safe_target_name} (<code>{to_user_id}</code>)\n"
-        f"مبلغ: <code>₳ {amount}</code>\n"
+        f"مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
         f"آیا مطمئن هستید؟",
         reply_markup=kb,
         parse_mode="HTML",
@@ -2068,8 +2127,9 @@ async def process_transfer_request(message: Message, state: FSMContext, to_user_
 
 
 def _transfer_help_text() -> str:
-    """متن راهنمای روش‌های انتقال آتر؛ هم در دستور متنی «انتقال آتر» و هم در دکمهٔ شیشه‌ای
-    «🔁 انتقال پول» پنل بانک استفاده می‌شود تا منطق راهنما یک‌بار نوشته و در هر دو جا بازاستفاده شود."""
+    """متن راهنمای روش‌های انتقال آتر بین کاربران؛ در دستور متنی «انتقال آتر» / /transfer
+    استفاده می‌شود (نکته: دکمهٔ «واریز پول» در پنل بانک به عملیات واریز به سپرده وصل است، نه به
+    این راهنما)."""
     return (
         "📖 <b>روش‌های انتقال آتر:</b>\n\n"
         "1️⃣ <b>انتقال با آیدی عددی:</b>\n"
@@ -2227,7 +2287,7 @@ async def confirm_transfer_cb(callback: CallbackQuery, state: FSMContext):
         f"✅ تراکنش با موفقیت انجام شد!\n"
         f"به نام: <b>{safe_target_name}</b>\n"
         f"شناسه: <code>{tx_id}</code>\n"
-        f"مبلغ: <code>₳ {amount}</code>",
+        f"مبلغ: <code>₳ {_fmt_money(amount)}</code>",
         parse_mode="HTML",
     )
 
@@ -2239,7 +2299,7 @@ async def confirm_transfer_cb(callback: CallbackQuery, state: FSMContext):
         await callback.bot.send_message(
             from_user,
             f"📤 <b>رسید انتقال</b>\n\n"
-            f"شما <code>₳ {amount}</code> به <b>{safe_target_name}</b> (<code>{to_user_id}</code>) انتقال دادید.\n"
+            f"شما <code>₳ {_fmt_money(amount)}</code> به <b>{safe_target_name}</b> (<code>{to_user_id}</code>) انتقال دادید.\n"
             f"🔖 شناسه تراکنش: <code>{tx_id}</code>",
             parse_mode="HTML",
         )
@@ -2250,7 +2310,7 @@ async def confirm_transfer_cb(callback: CallbackQuery, state: FSMContext):
         await callback.bot.send_message(
             to_user_id,
             f"📥 <b>رسید دریافت</b>\n\n"
-            f"شما <code>₳ {amount}</code> از <b>{safe_sender_name}</b> (<code>{from_user}</code>) دریافت کردید.\n"
+            f"شما <code>₳ {_fmt_money(amount)}</code> از <b>{safe_sender_name}</b> (<code>{from_user}</code>) دریافت کردید.\n"
             f"🔖 شناسه تراکنش: <code>{tx_id}</code>",
             parse_mode="HTML",
         )
@@ -2328,7 +2388,7 @@ def _render_leaderboard_page(rows, page: int):
         frozen_tag = " ❄️" if u["is_frozen"] else ""
         txt += (
             f"{label} <b>{safe_full_name}</b>{username_part}{frozen_tag}\n"
-            f"💰 موجودی: <code>₳ {u['total_assets']}</code>\n"
+            f"💰 موجودی: <code>₳ {_fmt_money(u['total_assets'])}</code>\n"
             f"------------------------------\n"
         )
 
@@ -2516,7 +2576,7 @@ async def _execute_ops_confirmed_action(callback: CallbackQuery, data: dict) -> 
                 await bot.send_message(
                     o["buyer_id"],
                     f"❌ محصول «<b>{html.escape(product_title)}</b>» توسط فروشنده حذف شد و سفارش شما لغو گردید.\n"
-                    f"🔓 مبلغ فریزشده این سفارش (<code>₳ {o['price'] + o['courier_fee']}</code>) به‌طور کامل به موجودی قابل‌استفاده شما بازگشت.",
+                    f"🔓 مبلغ فریزشده این سفارش (<code>₳ {_fmt_money(o['price'] + o['courier_fee'])}</code>) به‌طور کامل به موجودی قابل‌استفاده شما بازگشت.",
                     parse_mode="HTML",
                 )
             except Exception:
@@ -3246,12 +3306,12 @@ def _build_admin_give_take_dialog(data):
     if action == "give":
         text = (
             f"💰 <b>تأیید واریز مستقیم</b>\n"
-            f"آیا از واریز مبلغ <code>₳ {amount}</code> به حساب کاربر <code>{target}</code> اطمینان دارید؟"
+            f"آیا از واریز مبلغ <code>₳ {_fmt_money(amount)}</code> به حساب کاربر <code>{target}</code> اطمینان دارید؟"
         )
     else:  # take
         text = (
             f"🔻 <b>هشدار کسر مستقیم از حساب</b>\n"
-            f"آیا از کسر مبلغ <code>₳ {amount}</code> از حساب کاربر <code>{target}</code> اطمینان دارید؟"
+            f"آیا از کسر مبلغ <code>₳ {_fmt_money(amount)}</code> از حساب کاربر <code>{target}</code> اطمینان دارید؟"
         )
     return text, kb
 
@@ -3435,7 +3495,7 @@ async def _execute_admin_confirmed_action(callback: CallbackQuery, data: dict, a
             f"📊 <b>گزارش واریز گروهی ({safe_g_name}):</b>\n\n"
             f"✅ موفق: <code>{success_p}</code> کاربر\n"
             f"❌ خطا: <code>{failed_p}</code> کاربر\n"
-            f"💰 توزیع شده: <code>₳ {total_dist}</code>",
+            f"💰 توزیع شده: <code>₳ {_fmt_money(total_dist)}</code>",
             parse_mode="HTML",
         )
         return
@@ -3460,13 +3520,13 @@ async def _execute_admin_confirmed_action(callback: CallbackQuery, data: dict, a
                     )
                     await db.commit()
                     result_text = (
-                        f"✅ به خزانه مرکزی واریز شد.\n💰 مبلغ: <code>₳ {amount}</code>\n📝 دلیل: {safe_reason}"
+                        f"✅ به خزانه مرکزی واریز شد.\n💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n📝 دلیل: {safe_reason}"
                     )
                     notify_text = (
                         f"📢 <b>عملیات سوپرادمین</b>\n\n"
                         f"👑 ادمین: <code>{admin_id}</code>\n"
                         f"➕ افزایش موجودی خزانه مرکزی\n"
-                        f"💰 مبلغ: <code>₳ {amount}</code>\n"
+                        f"💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
                         f"📝 دلیل: {safe_reason}"
                     )
                 else:  # treasury_sub
@@ -3477,13 +3537,13 @@ async def _execute_admin_confirmed_action(callback: CallbackQuery, data: dict, a
                     if not ok:
                         return await callback.message.edit_text("❌ موجودی خزانه کافی نیست.")
                     result_text = (
-                        f"🔥 از خزانه مرکزی کسر شد.\n💰 مبلغ: <code>₳ {amount}</code>\n📝 دلیل: {safe_reason}"
+                        f"🔥 از خزانه مرکزی کسر شد.\n💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n📝 دلیل: {safe_reason}"
                     )
                     notify_text = (
                         f"📢 <b>عملیات سوپرادمین</b>\n\n"
                         f"👑 ادمین: <code>{admin_id}</code>\n"
                         f"➖ کاهش موجودی خزانه مرکزی\n"
-                        f"💰 مبلغ: <code>₳ {amount}</code>\n"
+                        f"💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
                         f"📝 دلیل: {safe_reason}"
                     )
 
@@ -3521,12 +3581,12 @@ async def _execute_admin_confirmed_action(callback: CallbackQuery, data: dict, a
                     (tx_id, datetime.now(timezone.utc).isoformat(), target, amount, f"واریز مدیریت: {reason}"),
                 )
                 await db.commit()
-                result_text = f"✅ واریز شد.\n👤 به: <b>{safe_target_name}</b> (<code>{target}</code>)\n💰 مبلغ: <code>₳ {amount}</code>\n🔖 شناسه: <code>{tx_id}</code>"
+                result_text = f"✅ واریز شد.\n👤 به: <b>{safe_target_name}</b> (<code>{target}</code>)\n💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n🔖 شناسه: <code>{tx_id}</code>"
                 notify_text = (
                     f"📢 <b>عملیات سوپرادمین</b>\n\n"
                     f"👑 ادمین: <code>{admin_id}</code>\n"
                     f"➕ واریز به: <b>{safe_target_name}</b> (<code>{target}</code>)\n"
-                    f"💰 مبلغ: <code>₳ {amount}</code>\n"
+                    f"💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
                     f"📝 دلیل: {safe_reason}\n"
                     f"🔖 شناسه: <code>{tx_id}</code>"
                 )
@@ -3543,12 +3603,12 @@ async def _execute_admin_confirmed_action(callback: CallbackQuery, data: dict, a
                     (tx_id, datetime.now(timezone.utc).isoformat(), target, amount, f"کسر مدیریت: {reason}"),
                 )
                 await db.commit()
-                result_text = f"🔥 کسر شد.\n👤 از: <b>{safe_target_name}</b> (<code>{target}</code>)\n💰 مبلغ: <code>₳ {amount}</code>\n🔖 شناسه: <code>{tx_id}</code>"
+                result_text = f"🔥 کسر شد.\n👤 از: <b>{safe_target_name}</b> (<code>{target}</code>)\n💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n🔖 شناسه: <code>{tx_id}</code>"
                 notify_text = (
                     f"📢 <b>عملیات سوپرادمین</b>\n\n"
                     f"👑 ادمین: <code>{admin_id}</code>\n"
                     f"➖ کسر از: <b>{safe_target_name}</b> (<code>{target}</code>)\n"
-                    f"💰 مبلغ: <code>₳ {amount}</code>\n"
+                    f"💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
                     f"📝 دلیل: {safe_reason}\n"
                     f"🔖 شناسه: <code>{tx_id}</code>"
                 )
@@ -3582,8 +3642,8 @@ def _build_admin_final_dialog(data):
         ]])
         text = (
             f"⚠️ <b>تأیید نهایی</b>\n\n"
-            f"با تأیید نهایی، مبلغ <code>₳ {amount}</code> به <code>{recipient_count}</code> نفر از گروه «<b>{safe_g_name}</b>» "
-            f"(مجموعاً <code>₳ {total}</code>) واریز خواهد شد.\n"
+            f"با تأیید نهایی، مبلغ <code>₳ {_fmt_money(amount)}</code> به <code>{recipient_count}</code> نفر از گروه «<b>{safe_g_name}</b>» "
+            f"(مجموعاً <code>₳ {_fmt_money(total)}</code>) واریز خواهد شد.\n"
             f"این عملیات قابل بازگشت نیست.\n\n"
             f"آیا کاملاً مطمئن هستید؟"
         )
@@ -3599,7 +3659,7 @@ def _build_admin_final_dialog(data):
     ]])
     text = (
         f"⚠️ <b>تأیید نهایی</b>\n\n"
-        f"با تأیید نهایی، مبلغ <code>₳ {amount}</code> برای <b>{safe_target_name}</b> (<code>{target}</code>) {verb} خواهد شد.\n"
+        f"با تأیید نهایی، مبلغ <code>₳ {_fmt_money(amount)}</code> برای <b>{safe_target_name}</b> (<code>{target}</code>) {verb} خواهد شد.\n"
         f"این عملیات قابل بازگشت نیست.\n\n"
         f"آیا کاملاً مطمئن هستید؟"
     )
@@ -3717,7 +3777,7 @@ def _build_group_path_dialog(kind: str, g_name: str, amount: int, normal_count: 
         if kind == "rewardgroup":
             text = (
                 f"🎁 <b>تأیید واریز همگانی</b>\n"
-                f"آیا از واریز مبلغ <code>₳ {amount}</code> به حساب تمام اعضای گروه «{safe_g_name}» "
+                f"آیا از واریز مبلغ <code>₳ {_fmt_money(amount)}</code> به حساب تمام اعضای گروه «{safe_g_name}» "
                 f"(تعداد: {normal_count} نفر) اطمینان دارید؟"
             )
         else:
@@ -3725,8 +3785,8 @@ def _build_group_path_dialog(kind: str, g_name: str, amount: int, normal_count: 
                 f"⚠️ <b>تأیید عملیات گروهی</b>\n\n"
                 f"👥 گروه/دسته‌بندی: <b>{safe_g_name}</b>\n"
                 f"👤 تعداد اعضا: <code>{normal_count}</code>\n"
-                f"💰 مبلغ فردی: <code>₳ {amount}</code>\n"
-                f"🧮 مجموع: <code>₳ {total}</code>\n\n"
+                f"💰 مبلغ فردی: <code>₳ {_fmt_money(amount)}</code>\n"
+                f"🧮 مجموع: <code>₳ {_fmt_money(total)}</code>\n\n"
                 f"آیا تأیید می‌کنید؟"
             )
     elif include_frozen:
@@ -3734,7 +3794,7 @@ def _build_group_path_dialog(kind: str, g_name: str, amount: int, normal_count: 
         text = (
             f"👤 <code>{normal_count}</code> کاربر عادی و <code>{frozen_count}</code> کاربر فریز وجود دارد "
             f"که به آن‌ها پول انتقال داده می‌شود.\n"
-            f"💰 مبلغ فردی: <code>₳ {amount}</code> | 🧮 مجموع: <code>₳ {total}</code>\n\n"
+            f"💰 مبلغ فردی: <code>₳ {_fmt_money(amount)}</code> | 🧮 مجموع: <code>₳ {_fmt_money(total)}</code>\n\n"
             f"آیا تأیید می‌کنید؟"
         )
     else:
@@ -3742,7 +3802,7 @@ def _build_group_path_dialog(kind: str, g_name: str, amount: int, normal_count: 
         text = (
             f"آیا مطمئن هستید که می‌خواهید فقط به کاربران بدون فریز پول انتقال دهید؟\n\n"
             f"👤 تعداد: <code>{normal_count}</code> نفر\n"
-            f"💰 مبلغ فردی: <code>₳ {amount}</code> | 🧮 مجموع: <code>₳ {total}</code>"
+            f"💰 مبلغ فردی: <code>₳ {_fmt_money(amount)}</code> | 🧮 مجموع: <code>₳ {_fmt_money(total)}</code>"
         )
 
     if kind == "rewardgroup":
@@ -3933,11 +3993,11 @@ async def cmd_economy(message: Message):
     treasury_balance = await get_treasury_balance()
     await message.reply(
         f"👥 کل اعضا: <code>{row[0]}</code>\n"
-        f"💰 حجم نقدینگی در گردش: <code>₳ {row[1] or 0}</code>\n"
-        f"🏛 موجودی خزانه مرکزی: <code>₳ {treasury_balance}</code>\n"
-        f"🏦 مجموع سپرده‌های بانکی: <code>₳ {bank_row[0]}</code>\n"
-        f"🔒 مجموع وثیقه‌های قفل‌شده: <code>₳ {bank_row[1]}</code>\n"
-        f"💳 وام‌های فعال: <code>{loans_row[0]}</code> عدد به مبلغ <code>₳ {loans_row[1]}</code>",
+        f"💰 حجم نقدینگی در گردش: <code>₳ {_fmt_money(row[1] or 0)}</code>\n"
+        f"🏛 موجودی خزانه مرکزی: <code>₳ {_fmt_money(treasury_balance)}</code>\n"
+        f"🏦 مجموع سپرده‌های بانکی: <code>₳ {_fmt_money(bank_row[0])}</code>\n"
+        f"🔒 مجموع وثیقه‌های قفل‌شده: <code>₳ {_fmt_money(bank_row[1])}</code>\n"
+        f"💳 وام‌های فعال: <code>{loans_row[0]}</code> عدد به مبلغ <code>₳ {_fmt_money(loans_row[1])}</code>",
         parse_mode="HTML"
     )
 
@@ -3953,14 +4013,14 @@ def _render_treasury_page(treasury_balance: int, txs, page: int):
     page_items = txs[start:start + TREASURY_TX_PAGE_SIZE]
 
     txt = f"🏛 <b>تاریخچه تراکنش‌های خزانه مرکزی (صفحه {page + 1} از {total_pages})</b>\n"
-    txt += f"موجودی فعلی خزانه: <code>₳ {treasury_balance}</code>\n\n"
+    txt += f"موجودی فعلی خزانه: <code>₳ {_fmt_money(treasury_balance)}</code>\n\n"
     if not page_items:
         txt += "📜 هیچ تراکنشی ثبت نشده است."
     for tx in page_items:
         direction = "➕ ورودی" if tx["to_user"] == TREASURY_USER_ID else "➖ خروجی"
         safe_reason = html.escape(tx["reason"] or "-")
         txt += (
-            f"🔹 <code>{tx['tx_id']}</code> | {direction} | <code>₳ {tx['amount']}</code> | "
+            f"🔹 <code>{tx['tx_id']}</code> | {direction} | <code>₳ {_fmt_money(tx['amount'])}</code> | "
             f"{safe_reason} | <code>{tx['timestamp']}</code>\n"
         )
 
@@ -4064,7 +4124,7 @@ async def cmd_treasury_add(message: Message, state: FSMContext):
     )
     confirm_msg = await message.reply(
         f"🏛 <b>تأیید افزایش موجودی خزانه</b>\n"
-        f"مبلغ: <code>₳ {amount}</code> | دلیل: {safe_reason}\n"
+        f"مبلغ: <code>₳ {_fmt_money(amount)}</code> | دلیل: {safe_reason}\n"
         f"آیا این تراکنش ورودی به خزانه مرکزی را تأیید می‌کنید؟",
         reply_markup=kb,
         parse_mode="HTML",
@@ -4110,7 +4170,7 @@ async def cmd_treasury_sub(message: Message, state: FSMContext):
     )
     confirm_msg = await message.reply(
         f"🚨 <b>هشدار برداشت از خزانه مرکزی</b>\n"
-        f"مبلغ: <code>₳ {amount}</code> | دلیل: {safe_reason}\n"
+        f"مبلغ: <code>₳ {_fmt_money(amount)}</code> | دلیل: {safe_reason}\n"
         f"آیا از کسر این مبلغ از خزانه مرکزی اطمینان دارید؟",
         reply_markup=kb,
         parse_mode="HTML",
@@ -4136,8 +4196,8 @@ def _build_tgive_dialog(target: int, target_name: str, amount: int, treasury_bal
     text = (
         f"⚠️ <b>تأیید انتقال از خزانه مرکزی</b>\n\n"
         f"👤 گیرنده: <b>{safe_target_name}</b> (<code>{target}</code>)\n"
-        f"💰 مبلغ: <code>₳ {amount}</code>\n"
-        f"🏛 موجودی فعلی خزانه: <code>₳ {treasury_balance}</code>\n\n"
+        f"💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
+        f"🏛 موجودی فعلی خزانه: <code>₳ {_fmt_money(treasury_balance)}</code>\n\n"
         f"آیا مطمئن هستید؟"
     )
     return text, kb
@@ -4151,7 +4211,7 @@ def _build_tgive_final_dialog(target: int, amount: int, token: str):
     ]])
     text = (
         f"⚠️ <b>تأیید نهایی</b>\n\n"
-        f"با تأیید نهایی، مبلغ <code>₳ {amount}</code> از خزانه مرکزی به حساب <code>{target}</code> واریز خواهد شد.\n"
+        f"با تأیید نهایی، مبلغ <code>₳ {_fmt_money(amount)}</code> از خزانه مرکزی به حساب <code>{target}</code> واریز خواهد شد.\n"
         f"این عملیات قابل بازگشت نیست.\n\n"
         f"آیا کاملاً مطمئن هستید؟"
     )
@@ -4335,13 +4395,13 @@ async def cb_treasury_give_final_yes(callback: CallbackQuery, state: FSMContext)
             await db.commit()
 
     await callback.message.edit_text(
-        f"✅ مبلغ <code>₳ {amount}</code> از خزانه مرکزی به حساب <code>{target}</code> واریز شد.",
+        f"✅ مبلغ <code>₳ {_fmt_money(amount)}</code> از خزانه مرکزی به حساب <code>{target}</code> واریز شد.",
         parse_mode="HTML",
     )
     try:
         await callback.bot.send_message(
             target,
-            f"🏛 مبلغ <code>₳ {amount}</code> از خزانه مرکزی آترامنتوم به حساب شما واریز شد.",
+            f"🏛 مبلغ <code>₳ {_fmt_money(amount)}</code> از خزانه مرکزی آترامنتوم به حساب شما واریز شد.",
             parse_mode="HTML",
         )
     except Exception:
@@ -4389,9 +4449,9 @@ def _build_ttake_dialog(target: int, target_name: str, amount: int, target_trans
     text = (
         f"⚠️ <b>تأیید برداشت به خزانه مرکزی</b>\n\n"
         f"👤 از حساب: <b>{safe_target_name}</b> (<code>{target}</code>)\n"
-        f"💰 مبلغ: <code>₳ {amount}</code>\n"
-        f"🔓 موجودی آزاد فعلی کاربر: <code>₳ {target_transferable}</code>\n"
-        f"🏛 موجودی فعلی خزانه: <code>₳ {treasury_balance}</code>\n\n"
+        f"💰 مبلغ: <code>₳ {_fmt_money(amount)}</code>\n"
+        f"🔓 موجودی آزاد فعلی کاربر: <code>₳ {_fmt_money(target_transferable)}</code>\n"
+        f"🏛 موجودی فعلی خزانه: <code>₳ {_fmt_money(treasury_balance)}</code>\n\n"
         f"آیا مطمئن هستید؟"
     )
     return text, kb
@@ -4405,7 +4465,7 @@ def _build_ttake_final_dialog(target: int, amount: int, token: str):
     ]])
     text = (
         f"⚠️ <b>تأیید نهایی</b>\n\n"
-        f"با تأیید نهایی، مبلغ <code>₳ {amount}</code> از حساب <code>{target}</code> به خزانه مرکزی منتقل خواهد شد.\n"
+        f"با تأیید نهایی، مبلغ <code>₳ {_fmt_money(amount)}</code> از حساب <code>{target}</code> به خزانه مرکزی منتقل خواهد شد.\n"
         f"این عملیات قابل بازگشت نیست.\n\n"
         f"آیا کاملاً مطمئن هستید؟"
     )
@@ -4456,7 +4516,7 @@ async def cmd_treasury_take(message: Message, state: FSMContext):
     target_transferable = max(0, target_data["balance"] - target_data["frozen_balance"])
     if target_transferable < amount:
         return await message.reply(
-            f"❌ موجودی آزاد کاربر کافی نیست. موجودی آزاد فعلی: <code>₳ {target_transferable}</code>",
+            f"❌ موجودی آزاد کاربر کافی نیست. موجودی آزاد فعلی: <code>₳ {_fmt_money(target_transferable)}</code>",
             parse_mode="HTML",
         )
 
@@ -4600,13 +4660,13 @@ async def cb_treasury_take_final_yes(callback: CallbackQuery, state: FSMContext)
             await db.commit()
 
     await callback.message.edit_text(
-        f"✅ مبلغ <code>₳ {amount}</code> از حساب <code>{target}</code> به خزانه مرکزی منتقل شد.",
+        f"✅ مبلغ <code>₳ {_fmt_money(amount)}</code> از حساب <code>{target}</code> به خزانه مرکزی منتقل شد.",
         parse_mode="HTML",
     )
     try:
         await callback.bot.send_message(
             target,
-            f"🏛 مبلغ <code>₳ {amount}</code> از حساب شما به خزانه مرکزی آترامنتوم منتقل شد.",
+            f"🏛 مبلغ <code>₳ {_fmt_money(amount)}</code> از حساب شما به خزانه مرکزی آترامنتوم منتقل شد.",
             parse_mode="HTML",
         )
     except Exception:
@@ -4730,8 +4790,8 @@ async def cb_group_salary_yes(callback: CallbackQuery, state: FSMContext):
     try:
         await callback.message.edit_text(
             f"⚠️ <b>تأیید نهایی</b>\n\n"
-            f"با تأیید نهایی، مبلغ <code>₳ {amount}</code> به <code>{recipient_count}</code> نفر از گروه «<b>{safe_g_name}</b>» "
-            f"(مجموعاً <code>₳ {total}</code>) از خزانه مرکزی واریز خواهد شد.\n"
+            f"با تأیید نهایی، مبلغ <code>₳ {_fmt_money(amount)}</code> به <code>{recipient_count}</code> نفر از گروه «<b>{safe_g_name}</b>» "
+            f"(مجموعاً <code>₳ {_fmt_money(total)}</code>) از خزانه مرکزی واریز خواهد شد.\n"
             f"این عملیات قابل بازگشت نیست.\n\n"
             f"آیا کاملاً مطمئن هستید؟",
             reply_markup=kb,
@@ -4832,7 +4892,7 @@ async def cb_group_salary_final_yes(callback: CallbackQuery, state: FSMContext):
     safe_g_name = html.escape(g_name)
     await callback.message.edit_text(
         f"✅ حقوق گروهی برای <code>{len(fresh_members)}</code> نفر از گروه «<b>{safe_g_name}</b>» با موفقیت واریز شد.\n"
-        f"💰 مبلغ هر نفر: <code>₳ {per_person}</code> | مبلغ کل: <code>₳ {total}</code>",
+        f"💰 مبلغ هر نفر: <code>₳ {_fmt_money(per_person)}</code> | مبلغ کل: <code>₳ {_fmt_money(total)}</code>",
         parse_mode="HTML",
     )
 
@@ -5019,10 +5079,10 @@ async def cmd_check(message: Message):
             f"🔎 <b>اطلاعات کامل کاربر <code>{args[1]}</code>:</b>\n\n"
             f"👤 نام کامل: {safe_full_name}\n"
             f"🏷 نام کاربری: @{safe_username}\n"
-            f"💰 موجودی: <code>₳ {u['balance']}</code>\n"
-            f"🔒 وثیقه قفل‌شده: <code>₳ {u['frozen_balance']}</code>\n"
-            f"💳 موجودی قابل انتقال: <code>₳ {transferable}</code>\n"
-            f"🏦 سپرده بانکی: <code>₳ {u['bank_savings']}</code>\n"
+            f"💰 موجودی: <code>₳ {_fmt_money(u['balance'])}</code>\n"
+            f"🔒 وثیقه قفل‌شده: <code>₳ {_fmt_money(u['frozen_balance'])}</code>\n"
+            f"💳 موجودی قابل انتقال: <code>₳ {_fmt_money(transferable)}</code>\n"
+            f"🏦 سپرده بانکی: <code>₳ {_fmt_money(u['bank_savings'])}</code>\n"
             f"👥 گروه: <b>{safe_group_name}</b>\n"
             f"⚡ وضعیت: {status}\n"
             f"🛡 دسترسی: {admin_st}"
@@ -5487,7 +5547,7 @@ async def cmd_set_min_loan(message: Message):
     except ValueError:
         return await message.reply("❌ مقدار نامعتبر است.")
     await set_setting("min_loan_amount", amount)
-    await message.reply(f"✅ حداقل مبلغ وام به <code>₳ {amount}</code> تغییر یافت.", parse_mode="HTML")
+    await message.reply(f"✅ حداقل مبلغ وام به <code>₳ {_fmt_money(amount)}</code> تغییر یافت.", parse_mode="HTML")
 
 
 @admin_router.message(Command("set_max_loan"))
@@ -5504,7 +5564,7 @@ async def cmd_set_max_loan(message: Message):
     except ValueError:
         return await message.reply("❌ مقدار نامعتبر است.")
     await set_setting("max_loan_amount", amount)
-    await message.reply(f"✅ حداکثر مبلغ وام به <code>₳ {amount}</code> تغییر یافت.", parse_mode="HTML")
+    await message.reply(f"✅ حداکثر مبلغ وام به <code>₳ {_fmt_money(amount)}</code> تغییر یافت.", parse_mode="HTML")
 
 
 @admin_router.message(Command("set_loan_interest"))
@@ -5733,8 +5793,8 @@ async def cmd_view_set_all(message: Message):
         "⚙️ تنظیم: <code>/set_bank_treasury_profit_pct [درصد سهم خزانه]</code>\n\n"
 
         "💳 <b>بخش: وام — حداقل/حداکثر مبلغ وام</b>\n"
-        f"🔸 حداقل مبلغ وام: <code>₳ {int(float(vals['min_loan_amount']))}</code>\n"
-        f"🔸 حداکثر مبلغ وام: <code>₳ {int(float(vals['max_loan_amount']))}</code>\n"
+        f"🔸 حداقل مبلغ وام: <code>₳ {_fmt_money(int(float(vals['min_loan_amount'])))}</code>\n"
+        f"🔸 حداکثر مبلغ وام: <code>₳ {_fmt_money(int(float(vals['max_loan_amount'])))}</code>\n"
         "📝 کاربرد: محدوده مبلغی که کاربران می‌توانند برای وام درخواست دهند.\n"
         "⚙️ تنظیم: <code>/set_min_loan [مبلغ]</code> و <code>/set_max_loan [مبلغ]</code>\n\n"
 
@@ -6383,7 +6443,7 @@ async def process_product_final(callback: CallbackQuery, state: FSMContext):
     caption = (
         f"🛍 <b>{safe_title}</b>\n\n"
         f"📝 {safe_desc}\n\n"
-        f"💰 قیمت: <code>₳ {data['price']}</code>\n"
+        f"💰 قیمت: <code>₳ {_fmt_money(data['price'])}</code>\n"
         f"📦 موجودی: <b>{stock_str}</b>"
     )
 
@@ -6480,7 +6540,7 @@ def _render_inventory_page(products, page: int):
         stock_display = "نامحدود" if p["stock_type"] == "UNLIMITED" else f"{p['stock_qty']} عدد"
         txt += (
             f"🔹 کد: <code>{code_display}</code> | نام: <b>{safe_title}</b> | "
-            f"قیمت: <code>₳ {p['price']}</code> | موجودی: <b>{stock_display}</b>\n"
+            f"قیمت: <code>₳ {_fmt_money(p['price'])}</code> | موجودی: <b>{stock_display}</b>\n"
         )
     txt += "\nℹ️ برای مدیریت هر محصول: <code>/inventory [کد_محصول]</code>"
 
@@ -6516,7 +6576,7 @@ def _product_management_view(p):
         f"🏷 نام: <b>{safe_title}</b>\n"
         f"🔢 کد: <code>{code_display}</code>\n"
         f"🏷 نوع: <b>{type_label}</b>\n"
-        f"💰 قیمت فعلی: <code>₳ {p['price']}</code>\n"
+        f"💰 قیمت فعلی: <code>₳ {_fmt_money(p['price'])}</code>\n"
         f"📦 موجودی فعلی: <b>{stock_display}</b>"
     )
 
@@ -6899,7 +6959,7 @@ async def cmd_my_shop(message: Message):
     await message.reply(
         f"🏪 <b>گزارش فروشگاه {safe_title}</b>\n\n"
         f"📊 تعداد کل فروش: <code>{stats['cnt']}</code> عدد\n"
-        f"💰 مجموع ارزش سفارشات: <code>₳ {stats['total'] or 0}</code>\n"
+        f"💰 مجموع ارزش سفارشات: <code>₳ {_fmt_money(stats['total'] or 0)}</code>\n"
         f"⚡ وضعیت فروشگاه: <b>{shop['status']}</b>",
         parse_mode="HTML"
     )
@@ -6958,13 +7018,13 @@ async def cb_initiate_buy(callback: CallbackQuery):
 
     buyer_transferable = max(0, buyer["balance"] - buyer["frozen_balance"])
     if buyer_transferable < total_cost:
-        return await callback.answer(f"❌ موجودی ناکافی! قیمت محصول: ₳ {price} + هزینه پست: ₳ {courier_fee} = مجموع: ₳ {total_cost}", show_alert=True)
+        return await callback.answer(f"❌ موجودی ناکافی! قیمت محصول: ₳ {_fmt_money(price)} + هزینه پست: ₳ {_fmt_money(courier_fee)} = مجموع: ₳ {_fmt_money(total_cost)}", show_alert=True)
 
     safe_title = html.escape(prod['title'])
     if prod["needs_courier"]:
-        cost_line = f"💰 قیمت محصول: <code>₳ {price}</code>\n🚚 هزینه پست: <code>₳ {courier_fee}</code>\n💳 مجموع پرداختی: <code>₳ {total_cost}</code>\n"
+        cost_line = f"💰 قیمت محصول: <code>₳ {_fmt_money(price)}</code>\n🚚 هزینه پست: <code>₳ {_fmt_money(courier_fee)}</code>\n💳 مجموع پرداختی: <code>₳ {_fmt_money(total_cost)}</code>\n"
     else:
-        cost_line = f"💰 مبلغ پرداختی: <code>₳ {price}</code>\n"
+        cost_line = f"💰 مبلغ پرداختی: <code>₳ {_fmt_money(price)}</code>\n"
 
     confirm_txt = (
         f"🛍 <b>تاییدیه خرید</b>\n\n"
@@ -7061,7 +7121,7 @@ async def cb_confirm_buy(callback: CallbackQuery):
             # 🔒 موجودی قابل‌استفاده (غیر از مبالغ قبلاً فریزشده مثل وثیقه وام یا سفارش‌های دیگر)
             transferable = max(0, buyer["balance"] - buyer["frozen_balance"])
             if transferable < total_cost:
-                await callback.answer(f"❌ موجودی ناکافی! قیمت محصول: ₳ {price} + هزینه پست: ₳ {courier_fee} = مجموع: ₳ {total_cost}", show_alert=True)
+                await callback.answer(f"❌ موجودی ناکافی! قیمت محصول: ₳ {_fmt_money(price)} + هزینه پست: ₳ {_fmt_money(courier_fee)} = مجموع: ₳ {_fmt_money(total_cost)}", show_alert=True)
                 try:
                     await callback.message.edit_text("❌ موجودی حساب شما برای این خرید کافی نیست.")
                 except Exception:
@@ -7128,7 +7188,7 @@ async def cb_confirm_buy(callback: CallbackQuery):
                 caption = (
                     f"🛍 <b>{safe_title}</b>\n\n"
                     f"📝 {safe_desc}\n\n"
-                    f"💰 قیمت: <code>₳ {prod['price']}</code>\n"
+                    f"💰 قیمت: <code>₳ {_fmt_money(prod['price'])}</code>\n"
                     f"📦 موجودی: <b>{stock_str}</b>"
                 )
                 kb_buy = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍 خرید این محصول", callback_data=f"buy_prod_{product_id}")]])
@@ -7140,9 +7200,9 @@ async def cb_confirm_buy(callback: CallbackQuery):
 
     # ویرایش پیام تاییدیه در پیوی خریدار با جزئیات نهایی خرید
     if prod["needs_courier"]:
-        cost_line = f"💰 قیمت محصول: <code>₳ {price}</code>\n🚚 هزینه پست: <code>₳ {courier_fee}</code>\n💳 مجموع پرداختی: <code>₳ {total_cost}</code>\n"
+        cost_line = f"💰 قیمت محصول: <code>₳ {_fmt_money(price)}</code>\n🚚 هزینه پست: <code>₳ {_fmt_money(courier_fee)}</code>\n💳 مجموع پرداختی: <code>₳ {_fmt_money(total_cost)}</code>\n"
     else:
-        cost_line = f"💰 مبلغ پرداختی: <code>₳ {price}</code>\n"
+        cost_line = f"💰 مبلغ پرداختی: <code>₳ {_fmt_money(price)}</code>\n"
     escrow_note = "\n🧊 مبلغ فوق فریز شد و تا زمان تایید تحویل توسط پستچی، به کسی پرداخت نمی‌شود." if prod["needs_courier"] else ""
     msg_buyer = (
         f"🎉 خرید شما نهایی شد!\n"
@@ -7174,7 +7234,7 @@ async def cb_confirm_buy(callback: CallbackQuery):
         msg_courier = (
             f"🚚 <b>سفارش جدید آماده ارسال!</b>\n"
             f"📦 محصول: <b>{html.escape(prod['title'])}</b>\n"
-            f"💰 کرایه پست: <code>₳ {courier_fee}</code>\n"
+            f"💰 کرایه پست: <code>₳ {_fmt_money(courier_fee)}</code>\n"
             f"🔐 کد ۱۰ رقمی تحویل: <code>{code_10}</code>\n"
             f"جهت تایید تحویل، دستور زیر را بزنید:\n"
             f"<code>/confirm_dispatch {code_10}</code>"
@@ -7359,7 +7419,7 @@ async def cmd_confirm_dispatch(message: Message):
             await db.execute("UPDATE orders SET status = 'DELIVERED', courier_id = ? WHERE order_id = ?", (courier_id, order["order_id"]))
             await db.commit()
 
-    await message.reply(f"✅ تحویل سفارش با موفقیت ثبت شد و مبلغ <code>₳ {courier_share}</code> به حساب شما واریز گردید.", parse_mode="HTML")
+    await message.reply(f"✅ تحویل سفارش با موفقیت ثبت شد و مبلغ <code>₳ {_fmt_money(courier_share)}</code> به حساب شما واریز گردید.", parse_mode="HTML")
 
 
 # --- ۵. خریداران و عمومی ---
@@ -7389,7 +7449,7 @@ def _render_my_orders_page(orders, page: int):
         st = _order_status_label(o["status"])
         txt += (
             f"🔹 کد: <code>{o['code_10']}</code> | {safe_title} | "
-            f"<code>₳ {o['price']}</code> | {st}\n"
+            f"<code>₳ {_fmt_money(o['price'])}</code> | {st}\n"
         )
 
     kb = _build_pagination_keyboard(page, total_pages, "myorders_page")
@@ -7550,22 +7610,22 @@ def _bank_panel_text(u) -> str:
     total_after_profit = u["bank_savings"] + u["last_daily_profit"]
     return (
         "🏦 <b>بانک آترامنتوم</b>\n\n"
-        f"💰 مبلغ کل موجود در بانک: <code>₳ {u['bank_savings']}</code>\n"
-        f"📈 آخرین سود روزانه دریافتی: <code>₳ {u['last_daily_profit']}</code>\n"
-        f"🧮 موجودی کل بعد از دریافت سود: <code>₳ {total_after_profit}</code>"
+        f"💰 مبلغ کل موجود در بانک: <code>₳ {_fmt_money(u['bank_savings'])}</code>\n"
+        f"📈 آخرین سود روزانه دریافتی: <code>₳ {_fmt_money(u['last_daily_profit'])}</code>\n"
+        f"🧮 موجودی کل بعد از دریافت سود: <code>₳ {_fmt_money(total_after_profit)}</code>"
     )
 
 
 def _bank_buttons() -> InlineKeyboardMarkup:
     """چیدمان دکمه‌های نمای سریع بانک (نمای گروه/کوتاه):
-    ردیف ۱: برداشت پول | انتقال پول (انتقال به سپردهٔ بانکی)
+    ردیف ۱: برداشت پول | واریز پول (انتقال به سپردهٔ بانکی)
     ردیف ۲: 🏆 لیدربرد
     (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render به‌صورت ردیف
     مستقل جدید در انتهای همین کیبورد اضافه می‌شود.)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
-            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_deposit"),
+            InlineKeyboardButton(text="📥 واریز پول", callback_data="bank_deposit"),
         ],
         [InlineKeyboardButton(text="🏆 لیدربرد", callback_data="bank_leaderboard_open")],
     ])
@@ -7575,17 +7635,17 @@ def _bank_full_text(u) -> str:
     transferable = max(0, u["balance"] - u["frozen_balance"])
     return (
         "🏦 <b>حساب بانکی آترامنتوم شما</b>\n\n"
-        f"💰 موجودی کل کیف پول: <code>₳ {u['balance']}</code>\n"
-        f"🔒 موجودی وثیقه قفل‌شده: <code>₳ {u['frozen_balance']}</code>\n"
-        f"💳 موجودی قابل انتقال: <code>₳ {transferable}</code>\n\n"
-        f"🏦 سپرده بانکی فعلی: <code>₳ {u['bank_savings']}</code>\n"
-        f"📈 آخرین سود روزانه دریافتی: <code>₳ {u['last_daily_profit']}</code>"
+        f"💰 موجودی کل کیف پول: <code>₳ {_fmt_money(u['balance'])}</code>\n"
+        f"🔒 موجودی وثیقه قفل‌شده: <code>₳ {_fmt_money(u['frozen_balance'])}</code>\n"
+        f"💳 موجودی قابل انتقال: <code>₳ {_fmt_money(transferable)}</code>\n\n"
+        f"🏦 سپرده بانکی فعلی: <code>₳ {_fmt_money(u['bank_savings'])}</code>\n"
+        f"📈 آخرین سود روزانه دریافتی: <code>₳ {_fmt_money(u['last_daily_profit'])}</code>"
     )
 
 
 def _bank_full_buttons() -> InlineKeyboardMarkup:
     """چیدمان دکمه‌های نمای کامل بانک (نمای پیوی):
-    ردیف ۱: برداشت پول | انتقال پول (انتقال به سپردهٔ بانکی)
+    ردیف ۱: برداشت پول | واریز پول (انتقال به سپردهٔ بانکی)
     ردیف ۲: 💳 وام‌های آترامنتوم
     ردیف ۳: 🏆 لیدربرد
     (دکمهٔ «🔙 برگشت به پروفایل» در صورت with_back=True توسط _bank_render به‌صورت ردیف
@@ -7594,7 +7654,7 @@ def _bank_full_buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📤 برداشت پول", callback_data="bank_withdraw"),
-            InlineKeyboardButton(text="🔁 انتقال پول", callback_data="bank_deposit"),
+            InlineKeyboardButton(text="📥 واریز پول", callback_data="bank_deposit"),
         ],
         [InlineKeyboardButton(text="💳 وام‌های آترامنتوم", callback_data="loan_menu")],
         [InlineKeyboardButton(text="🏆 لیدربرد", callback_data="bank_leaderboard_open")],
@@ -7606,7 +7666,7 @@ def _bank_deposit_prompt_text() -> str:
         "📥 <b>واریز به بانک آترامنتوم</b>\n\n"
         "لطفاً مبلغ موردنظر برای واریز را با ریپلای روی همین پیام ارسال کنید.\n"
         "⚠️ فقط تا سقف موجودی قابل انتقال شما (موجودی منهای وثیقه قفل‌شده) قابل واریز است "
-        f"و سقف کل سپرده بانکی ₳{BANK_SAVINGS_CAP} است."
+        f"و سقف کل سپرده بانکی ₳{_fmt_money(BANK_SAVINGS_CAP)} است."
     )
 
 
@@ -7620,7 +7680,7 @@ def _bank_withdraw_prompt_text() -> str:
 def _bank_deposit_confirm_text(amount: int) -> str:
     return (
         "🔍 <b>تأیید واریز به بانک آترامنتوم</b>\n\n"
-        f"💳 مبلغ واریزی: <code>₳ {amount}</code>\n\n"
+        f"💳 مبلغ واریزی: <code>₳ {_fmt_money(amount)}</code>\n\n"
         "⚠️ با تأیید، این مبلغ از کیف پول شما کسر و به سپرده بانکی‌تان افزوده می‌شود."
     )
 
@@ -7628,7 +7688,7 @@ def _bank_deposit_confirm_text(amount: int) -> str:
 def _bank_withdraw_confirm_text(amount: int) -> str:
     return (
         "🔍 <b>تأیید برداشت از بانک آترامنتوم</b>\n\n"
-        f"💳 مبلغ برداشتی: <code>₳ {amount}</code>\n\n"
+        f"💳 مبلغ برداشتی: <code>₳ {_fmt_money(amount)}</code>\n\n"
         "⚠️ با تأیید، این مبلغ از سپرده بانکی‌تان کسر و به کیف پول شما افزوده می‌شود."
     )
 
@@ -7638,6 +7698,35 @@ def _bank_confirm_buttons(confirm_data: str, cancel_data: str) -> InlineKeyboard
         InlineKeyboardButton(text="✅ تأیید", callback_data=confirm_data),
         InlineKeyboardButton(text="❌ لغو", callback_data=cancel_data),
     ]])
+
+
+def _bank_amount_entry_cancel_buttons(cancel_data: str) -> InlineKeyboardMarkup:
+    """کیبورد یک‌دکمه‌ای «❌ لغو» برای مرحلهٔ ورود مبلغ (پیش از رسیدن به مرحلهٔ تأیید نهایی)،
+    تا کاربر بدون نیاز به ارسال مبلغ یا انتظار برای تایم‌اوت ۱ دقیقه‌ای، بتواند فوراً به صفحه
+    اصلی بانک بازگردد."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❌ لغو", callback_data=cancel_data),
+    ]])
+
+
+async def _bank_cancel_and_return(callback: CallbackQuery, state: FSMContext, note: str) -> None:
+    """لغو یک عملیات بانکی در حال انجام (واریز یا برداشت، در هر یک از دو مرحلهٔ «ورود مبلغ» یا
+    «تأیید نهایی») و بازگشت با ویرایش همان پیام به صفحهٔ اصلی بانک؛ این تابع مشترک توسط تمام
+    دکمه‌های «❌ لغو» مربوط به بانک استفاده می‌شود تا منطق لغو فقط یک‌بار نوشته شود."""
+    data = await state.get_data()
+    if callback.from_user.id != data.get("bank_user"):
+        return await callback.answer("❌ فقط خودتان می‌توانید لغو کنید.", show_alert=True)
+    chat_id = data.get("bank_chat_id", callback.message.chat.id)
+    bank_msg_id = data.get("bank_msg_id")
+    panel_type = data.get("bank_panel_type", "panel")
+    from_profile = data.get("bank_from_profile", False)
+    cancel_input_timeout(chat_id, callback.from_user.id)
+    await state.clear()
+    await _bank_edit_main(
+        callback.bot, chat_id, bank_msg_id, callback.from_user.id, panel_type,
+        note=note, with_back=from_profile,
+    )
+    await callback.answer()
 
 
 def _bank_detect_panel_type(message: Message) -> str:
@@ -7744,14 +7833,18 @@ async def cmd_bank_full(message: Message):
 
 
 async def _bank_start_deposit(callback: CallbackQuery, state: FSMContext, panel_type: str, from_profile: bool):
-    """شروع فرایند واریز/انتقال به سپردهٔ بانک: پیام را به فرم دریافت مبلغ ویرایش می‌کند و در
-    حالت انتظار قرار می‌گیرد."""
+    """شروع فرایند واریز/انتقال به سپردهٔ بانک: پیام را به فرم دریافت مبلغ (همراه با دکمهٔ
+    «❌ لغو» برای بازگشت فوری) ویرایش می‌کند و در حالت انتظار قرار می‌گیرد."""
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
     message_id = callback.message.message_id
 
     try:
-        await callback.message.edit_text(_bank_deposit_prompt_text(), parse_mode="HTML")
+        await callback.message.edit_text(
+            _bank_deposit_prompt_text(),
+            reply_markup=_bank_amount_entry_cancel_buttons("bank_deposit_amount_cancel"),
+            parse_mode="HTML",
+        )
     except Exception:
         pass
 
@@ -7774,11 +7867,17 @@ async def _bank_start_deposit(callback: CallbackQuery, state: FSMContext, panel_
 
 @user_router.callback_query(F.data == "bank_deposit")
 async def cb_bank_deposit(callback: CallbackQuery, state: FSMContext):
-    """دکمهٔ «🔁 انتقال پول» (ردیف اول پنل اصلی بانک، هم در پیوی و هم در گروه): وظیفهٔ این دکمه
-    انتقال مبلغ به سپردهٔ بانکی است (همان عملیات واریز)."""
+    """دکمهٔ «📥 واریز پول» (ردیف اول پنل اصلی بانک، هم در پیوی و هم در گروه): وظیفهٔ این دکمه
+    انتقال مبلغ به سپردهٔ بانکی است (عملیات واریز)."""
     panel_type = _bank_detect_panel_type(callback.message)
     from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
     await _bank_start_deposit(callback, state, panel_type, from_profile)
+
+
+@user_router.callback_query(BankForm.waiting_for_deposit_amount, F.data == "bank_deposit_amount_cancel")
+async def cb_bank_deposit_amount_cancel(callback: CallbackQuery, state: FSMContext):
+    """دکمهٔ «❌ لغو» در همان مرحلهٔ ورود مبلغ واریز (پیش از رسیدن به تأیید نهایی)."""
+    await _bank_cancel_and_return(callback, state, "❌ عملیات واریز لغو شد.")
 
 
 @user_router.callback_query(F.data == "bank_withdraw")
@@ -7790,7 +7889,11 @@ async def cb_bank_withdraw(callback: CallbackQuery, state: FSMContext):
     from_profile = _kb_has_callback(callback.message.reply_markup, "prof_home")
 
     try:
-        await callback.message.edit_text(_bank_withdraw_prompt_text(), parse_mode="HTML")
+        await callback.message.edit_text(
+            _bank_withdraw_prompt_text(),
+            reply_markup=_bank_amount_entry_cancel_buttons("bank_withdraw_amount_cancel"),
+            parse_mode="HTML",
+        )
     except Exception:
         pass
 
@@ -7809,6 +7912,12 @@ async def cb_bank_withdraw(callback: CallbackQuery, state: FSMContext):
         ),
     )
     await callback.answer()
+
+
+@user_router.callback_query(BankForm.waiting_for_withdraw_amount, F.data == "bank_withdraw_amount_cancel")
+async def cb_bank_withdraw_amount_cancel(callback: CallbackQuery, state: FSMContext):
+    """دکمهٔ «❌ لغو» در همان مرحلهٔ ورود مبلغ برداشت (پیش از رسیدن به تأیید نهایی)."""
+    await _bank_cancel_and_return(callback, state, "❌ عملیات برداشت لغو شد.")
 
 
 def _leaderboard_bank_keyboard(page: int, total_pages: int, panel_type: str, from_profile: bool) -> InlineKeyboardMarkup:
@@ -7908,6 +8017,7 @@ async def process_bank_deposit(message: Message, state: FSMContext):
             await message.bot.edit_message_text(
                 chat_id=chat_id, message_id=bank_msg_id,
                 text="⚠️ لطفاً روی همین پیام ریپلای کرده و مبلغ عددی را ارسال کنید.\n\n" + _bank_deposit_prompt_text(),
+                reply_markup=_bank_amount_entry_cancel_buttons("bank_deposit_amount_cancel"),
                 parse_mode="HTML",
             )
         except Exception:
@@ -7945,13 +8055,13 @@ async def process_bank_deposit(message: Message, state: FSMContext):
             transferable = max(0, u["balance"] - u["frozen_balance"])
             if amount > transferable:
                 return await _fail(
-                    f"❌ حداکثر مبلغ قابل واریز شما (موجودی قابل انتقال): <code>₳ {transferable}</code>"
+                    f"❌ حداکثر مبلغ قابل واریز شما (موجودی قابل انتقال): <code>₳ {_fmt_money(transferable)}</code>"
                 )
             remaining_cap = max(0, BANK_SAVINGS_CAP - u["bank_savings"])
             if amount > remaining_cap:
                 return await _fail(
-                    f"❌ سقف سپرده‌گذاری بانک <code>₳ {BANK_SAVINGS_CAP}</code> است.\n"
-                    f"سقف باقیمانده قابل واریز شما: <code>₳ {remaining_cap}</code>"
+                    f"❌ سقف سپرده‌گذاری بانک <code>₳ {_fmt_money(BANK_SAVINGS_CAP)}</code> است.\n"
+                    f"سقف باقیمانده قابل واریز شما: <code>₳ {_fmt_money(remaining_cap)}</code>"
                 )
 
     # ⚠️ در این مرحله هیچ تغییر مالی‌ای هنوز اعمال نشده؛ فقط پیش‌نمایش نمایش داده می‌شود و
@@ -7984,21 +8094,7 @@ async def process_bank_deposit(message: Message, state: FSMContext):
 
 @user_router.callback_query(BankForm.waiting_for_deposit_confirm, F.data == "bank_deposit_cancel")
 async def cb_bank_deposit_cancel(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if callback.from_user.id != data.get("bank_user"):
-        return await callback.answer("❌ فقط خودتان می‌توانید لغو کنید.", show_alert=True)
-    chat_id = data.get("bank_chat_id", callback.message.chat.id)
-    bank_msg_id = data.get("bank_msg_id")
-    panel_type = data.get("bank_panel_type", "panel")
-    from_profile = data.get("bank_from_profile", False)
-    cancel_input_timeout(chat_id, callback.from_user.id)
-    await state.clear()
-    await _bank_edit_main(
-        callback.bot, chat_id, bank_msg_id, callback.from_user.id, panel_type,
-        note="❌ عملیات واریز لغو شد. هیچ تغییر مالی‌ای انجام نشد.",
-        with_back=from_profile,
-    )
-    await callback.answer()
+    await _bank_cancel_and_return(callback, state, "❌ عملیات واریز لغو شد. هیچ تغییر مالی‌ای انجام نشد.")
 
 
 @user_router.callback_query(BankForm.waiting_for_deposit_confirm, F.data == "bank_deposit_confirm")
@@ -8038,13 +8134,13 @@ async def cb_bank_deposit_confirm(callback: CallbackQuery, state: FSMContext):
             transferable = max(0, u["balance"] - u["frozen_balance"])
             if amount > transferable:
                 return await _fail(
-                    f"❌ حداکثر مبلغ قابل واریز شما (موجودی قابل انتقال): <code>₳ {transferable}</code>"
+                    f"❌ حداکثر مبلغ قابل واریز شما (موجودی قابل انتقال): <code>₳ {_fmt_money(transferable)}</code>"
                 )
             remaining_cap = max(0, BANK_SAVINGS_CAP - u["bank_savings"])
             if amount > remaining_cap:
                 return await _fail(
-                    f"❌ سقف سپرده‌گذاری بانک <code>₳ {BANK_SAVINGS_CAP}</code> است.\n"
-                    f"سقف باقیمانده قابل واریز شما: <code>₳ {remaining_cap}</code>"
+                    f"❌ سقف سپرده‌گذاری بانک <code>₳ {_fmt_money(BANK_SAVINGS_CAP)}</code> است.\n"
+                    f"سقف باقیمانده قابل واریز شما: <code>₳ {_fmt_money(remaining_cap)}</code>"
                 )
 
             await db.execute(
@@ -8056,7 +8152,7 @@ async def cb_bank_deposit_confirm(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await _bank_edit_main(
         callback.bot, chat_id, bank_msg_id, user_id, panel_type,
-        note=f"✅ مبلغ <code>₳ {amount}</code> با موفقیت به حساب بانکی شما واریز شد.",
+        note=f"✅ مبلغ <code>₳ {_fmt_money(amount)}</code> با موفقیت به حساب بانکی شما واریز شد.",
         with_back=from_profile,
     )
     await callback.answer()
@@ -8078,6 +8174,7 @@ async def process_bank_withdraw(message: Message, state: FSMContext):
             await message.bot.edit_message_text(
                 chat_id=chat_id, message_id=bank_msg_id,
                 text="⚠️ لطفاً روی همین پیام ریپلای کرده و مبلغ عددی را ارسال کنید.\n\n" + _bank_withdraw_prompt_text(),
+                reply_markup=_bank_amount_entry_cancel_buttons("bank_withdraw_amount_cancel"),
                 parse_mode="HTML",
             )
         except Exception:
@@ -8112,7 +8209,7 @@ async def process_bank_withdraw(message: Message, state: FSMContext):
                 return await _fail("❌ حساب شما مسدود (فریز) است.")
             if amount > u["bank_savings"]:
                 return await _fail(
-                    f"❌ موجودی بانکی شما کافی نیست. سپرده فعلی: <code>₳ {u['bank_savings']}</code>"
+                    f"❌ موجودی بانکی شما کافی نیست. سپرده فعلی: <code>₳ {_fmt_money(u['bank_savings'])}</code>"
                 )
 
     # ⚠️ در این مرحله هیچ تغییر مالی‌ای هنوز اعمال نشده؛ فقط پیش‌نمایش نمایش داده می‌شود و
@@ -8145,21 +8242,7 @@ async def process_bank_withdraw(message: Message, state: FSMContext):
 
 @user_router.callback_query(BankForm.waiting_for_withdraw_confirm, F.data == "bank_withdraw_cancel")
 async def cb_bank_withdraw_cancel(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if callback.from_user.id != data.get("bank_user"):
-        return await callback.answer("❌ فقط خودتان می‌توانید لغو کنید.", show_alert=True)
-    chat_id = data.get("bank_chat_id", callback.message.chat.id)
-    bank_msg_id = data.get("bank_msg_id")
-    panel_type = data.get("bank_panel_type", "panel")
-    from_profile = data.get("bank_from_profile", False)
-    cancel_input_timeout(chat_id, callback.from_user.id)
-    await state.clear()
-    await _bank_edit_main(
-        callback.bot, chat_id, bank_msg_id, callback.from_user.id, panel_type,
-        note="❌ عملیات برداشت لغو شد. هیچ تغییر مالی‌ای انجام نشد.",
-        with_back=from_profile,
-    )
-    await callback.answer()
+    await _bank_cancel_and_return(callback, state, "❌ عملیات برداشت لغو شد. هیچ تغییر مالی‌ای انجام نشد.")
 
 
 @user_router.callback_query(BankForm.waiting_for_withdraw_confirm, F.data == "bank_withdraw_confirm")
@@ -8196,7 +8279,7 @@ async def cb_bank_withdraw_confirm(callback: CallbackQuery, state: FSMContext):
                 return await _fail("❌ حساب شما مسدود (فریز) است.")
             if amount > u["bank_savings"]:
                 return await _fail(
-                    f"❌ موجودی بانکی شما کافی نیست. سپرده فعلی: <code>₳ {u['bank_savings']}</code>"
+                    f"❌ موجودی بانکی شما کافی نیست. سپرده فعلی: <code>₳ {_fmt_money(u['bank_savings'])}</code>"
                 )
 
             await db.execute(
@@ -8208,7 +8291,7 @@ async def cb_bank_withdraw_confirm(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await _bank_edit_main(
         callback.bot, chat_id, bank_msg_id, user_id, panel_type,
-        note=f"✅ مبلغ <code>₳ {amount}</code> با موفقیت از بانک به کیف پول شما برداشت شد.",
+        note=f"✅ مبلغ <code>₳ {_fmt_money(amount)}</code> با موفقیت از بانک به کیف پول شما برداشت شد.",
         with_back=from_profile,
     )
     await callback.answer()
@@ -8308,8 +8391,8 @@ async def run_nightly_bank_interest(bot: Bot):
             await bot.send_message(
                 user_id,
                 "🏦 <b>سود روزانه بانک آترامنتوم</b>\n\n"
-                f"💰 سود امروز شما: <code>₳ {allowed_profit}</code>\n"
-                f"🏦 موجودی جدید سپرده: <code>₳ {savings + allowed_profit}</code>",
+                f"💰 سود امروز شما: <code>₳ {_fmt_money(allowed_profit)}</code>\n"
+                f"🏦 موجودی جدید سپرده: <code>₳ {_fmt_money(savings + allowed_profit)}</code>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -8390,18 +8473,18 @@ def _loan_summary_text(
     type_label = "🔒 وثیقه‌ای" if loan_type == "COLLATERAL" else "🤝 ضامنی"
     lines = [
         f"👤 متقاضی: <b>{safe_name}</b>",
-        f"💰 موجودی فعلی: <code>₳ {target_data['balance']}</code>",
-        f"💳 مبلغ وام: <code>₳ {amount}</code>",
+        f"💰 موجودی فعلی: <code>₳ {_fmt_money(target_data['balance'])}</code>",
+        f"💳 مبلغ وام: <code>₳ {_fmt_money(amount)}</code>",
         f"📈 نرخ سود: <b>{interest}٪</b>",
         f"🔢 تعداد اقساط: <b>{installments}</b>",
-        f"🧮 مجموع بازپرداخت: <code>₳ {total_repayment}</code>",
+        f"🧮 مجموع بازپرداخت: <code>₳ {_fmt_money(total_repayment)}</code>",
         f"🏷 نوع وام: {type_label}",
     ]
     if loan_type == "COLLATERAL":
-        lines.append(f"🔒 مبلغ وثیقه قفل‌شده: <code>₳ {collateral_amount}</code>")
+        lines.append(f"🔒 مبلغ وثیقه قفل‌شده: <code>₳ {_fmt_money(collateral_amount)}</code>")
     else:
-        lines.append(f"🔒 وثیقه گیرنده: <code>₳ {borrower_collateral}</code>")
-        lines.append(f"🔒 وثیقه ضامن: <code>₳ {guarantor_collateral}</code>")
+        lines.append(f"🔒 وثیقه گیرنده: <code>₳ {_fmt_money(borrower_collateral)}</code>")
+        lines.append(f"🔒 وثیقه ضامن: <code>₳ {_fmt_money(guarantor_collateral)}</code>")
     return "\n".join(lines)
 
 
@@ -8431,8 +8514,8 @@ async def cmd_loan_start(message: Message, state: FSMContext):
     await state.update_data(loan_settings=settings)
     prompt = await message.reply(
         "💳 <b>درخواست وام آترامنتوم</b>\n\n"
-        f"💰 مبلغ وام باید بین <code>₳ {int(settings['min_loan_amount'])}</code> "
-        f"تا <code>₳ {int(settings['max_loan_amount'])}</code> باشد.\n\n"
+        f"💰 مبلغ وام باید بین <code>₳ {_fmt_money(int(settings['min_loan_amount']))}</code> "
+        f"تا <code>₳ {_fmt_money(int(settings['max_loan_amount']))}</code> باشد.\n\n"
         "لطفاً مبلغ درخواستی خود را ارسال کنید:",
         parse_mode="HTML",
     )
@@ -8482,8 +8565,8 @@ async def cb_loan_new_request(callback: CallbackQuery, state: FSMContext):
     await state.update_data(loan_settings=settings)
     prompt = await callback.message.answer(
         "💳 <b>درخواست وام آترامنتوم</b>\n\n"
-        f"💰 مبلغ وام باید بین <code>₳ {int(settings['min_loan_amount'])}</code> "
-        f"تا <code>₳ {int(settings['max_loan_amount'])}</code> باشد.\n\n"
+        f"💰 مبلغ وام باید بین <code>₳ {_fmt_money(int(settings['min_loan_amount']))}</code> "
+        f"تا <code>₳ {_fmt_money(int(settings['max_loan_amount']))}</code> باشد.\n\n"
         "لطفاً مبلغ درخواستی خود را ارسال کنید:",
         parse_mode="HTML",
     )
@@ -8519,7 +8602,7 @@ async def loan_process_amount(message: Message, state: FSMContext):
     max_amt = int(settings["max_loan_amount"])
     if amount < min_amt or amount > max_amt:
         await message.reply(
-            f"❌ مبلغ وام باید بین <code>₳ {min_amt}</code> تا <code>₳ {max_amt}</code> باشد.",
+            f"❌ مبلغ وام باید بین <code>₳ {_fmt_money(min_amt)}</code> تا <code>₳ {_fmt_money(max_amt)}</code> باشد.",
             parse_mode="HTML",
         )
         return _reschedule()
@@ -8601,7 +8684,7 @@ async def _send_loan_request_to_admins(bot: Bot, loan_id: int):
     text = (
         "💳 <b>درخواست وام جدید</b>\n\n"
         f"{summary}\n\n"
-        f"🏛 موجودی فعلی خزانه: <code>₳ {treasury_balance}</code>"
+        f"🏛 موجودی فعلی خزانه: <code>₳ {_fmt_money(treasury_balance)}</code>"
         f"{collateral_note}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -8645,14 +8728,14 @@ async def loan_method_collateral(callback: CallbackQuery, state: FSMContext):
             if transferable < required_balance:
                 await state.clear()
                 return await callback.message.edit_text(
-                    f"❌ برای دریافت این وام باید حداقل <code>₳ {required_balance}</code> "
-                    f"در موجودی آزاد خود داشته باشید.\nموجودی قابل انتقال فعلی شما: <code>₳ {transferable}</code>",
+                    f"❌ برای دریافت این وام باید حداقل <code>₳ {_fmt_money(required_balance)}</code> "
+                    f"در موجودی آزاد خود داشته باشید.\nموجودی قابل انتقال فعلی شما: <code>₳ {_fmt_money(transferable)}</code>",
                     parse_mode="HTML",
                 )
             if transferable < collateral_amount:
                 await state.clear()
                 return await callback.message.edit_text(
-                    f"❌ موجودی آزاد شما برای وثیقه <code>₳ {collateral_amount}</code> این وام کافی نیست.",
+                    f"❌ موجودی آزاد شما برای وثیقه <code>₳ {_fmt_money(collateral_amount)}</code> این وام کافی نیست.",
                     parse_mode="HTML",
                 )
 
@@ -8669,11 +8752,11 @@ async def loan_method_collateral(callback: CallbackQuery, state: FSMContext):
 
     preview_text = (
         "🔍 <b>پیش‌نمایش درخواست وام وثیقه‌ای</b>\n\n"
-        f"💳 مبلغ وام: <code>₳ {amount}</code>\n"
+        f"💳 مبلغ وام: <code>₳ {_fmt_money(amount)}</code>\n"
         f"📈 نرخ سود: <b>{interest}٪</b>\n"
         f"🔢 تعداد اقساط: <b>{installments}</b>\n"
-        f"🧮 مجموع بازپرداخت: <code>₳ {total_repayment}</code>\n\n"
-        f"🔒 مبلغ وثیقه (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {collateral_amount}</code>\n\n"
+        f"🧮 مجموع بازپرداخت: <code>₳ {_fmt_money(total_repayment)}</code>\n\n"
+        f"🔒 مبلغ وثیقه (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {_fmt_money(collateral_amount)}</code>\n\n"
         "⚠️ با تأیید، درخواست وام برای بررسی نهایی برای سوپرادمین ارسال خواهد شد."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -8743,7 +8826,7 @@ async def cb_loan_collateral_preview_confirm(callback: CallbackQuery, state: FSM
                 await state.clear()
                 try:
                     await callback.message.edit_text(
-                        f"❌ موجودی آزاد شما برای وثیقه <code>₳ {collateral_amount}</code> این وام کافی نیست.",
+                        f"❌ موجودی آزاد شما برای وثیقه <code>₳ {_fmt_money(collateral_amount)}</code> این وام کافی نیست.",
                         parse_mode="HTML",
                     )
                 except Exception:
@@ -8772,7 +8855,7 @@ async def cb_loan_collateral_preview_confirm(callback: CallbackQuery, state: FSM
     try:
         await callback.message.edit_text(
             "✅ درخواست وام وثیقه‌ای شما ثبت شد و برای بررسی نهایی برای سوپرادمین ارسال گردید.\n"
-            f"🔒 در صورت تأیید سوپرادمین، مبلغ <code>₳ {collateral_amount}</code> به‌عنوان وثیقه از موجودی "
+            f"🔒 در صورت تأیید سوپرادمین، مبلغ <code>₳ {_fmt_money(collateral_amount)}</code> به‌عنوان وثیقه از موجودی "
             f"قابل‌انتقال شما کسر و قفل خواهد شد.",
             parse_mode="HTML",
         )
@@ -8876,8 +8959,8 @@ async def loan_process_guarantor(message: Message, state: FSMContext):
     borrower_transferable = max(0, borrower_data["balance"] - borrower_data["frozen_balance"])
     if borrower_transferable < required_balance_borrower:
         await message.reply(
-            f"❌ برای این وام باید حداقل <code>₳ {required_balance_borrower}</code> در موجودی آزاد خود داشته باشید.\n"
-            f"موجودی آزاد فعلی شما: <code>₳ {borrower_transferable}</code>",
+            f"❌ برای این وام باید حداقل <code>₳ {_fmt_money(required_balance_borrower)}</code> در موجودی آزاد خود داشته باشید.\n"
+            f"موجودی آزاد فعلی شما: <code>₳ {_fmt_money(borrower_transferable)}</code>",
             parse_mode="HTML",
         )
         return _reschedule()
@@ -8887,7 +8970,7 @@ async def loan_process_guarantor(message: Message, state: FSMContext):
     if guarantor_transferable < required_balance_guarantor:
         await message.reply(
             f"❌ موجودی آزاد ضامن انتخابی برای ضمانت این وام کافی نیست.\n"
-            f"موجودی آزاد لازم برای ضامن: <code>₳ {required_balance_guarantor}</code>",
+            f"موجودی آزاد لازم برای ضامن: <code>₳ {_fmt_money(required_balance_guarantor)}</code>",
             parse_mode="HTML",
         )
         return _reschedule()
@@ -8905,15 +8988,15 @@ async def loan_process_guarantor(message: Message, state: FSMContext):
     guarantor_name = html.escape(guarantor_data["full_name"] or str(guarantor_id))
     preview_text = (
         "🔍 <b>پیش‌نمایش درخواست وام ضامنی</b>\n\n"
-        f"💳 مبلغ وام: <code>₳ {amount}</code>\n"
+        f"💳 مبلغ وام: <code>₳ {_fmt_money(amount)}</code>\n"
         f"📈 نرخ سود: <b>{interest}٪</b>\n"
         f"🔢 تعداد اقساط: <b>{installments}</b>\n"
-        f"🧮 مجموع بازپرداخت: <code>₳ {total_repayment}</code>\n"
+        f"🧮 مجموع بازپرداخت: <code>₳ {_fmt_money(total_repayment)}</code>\n"
         f"🤝 ضامن: <b>{guarantor_name}</b> (<code>{guarantor_id}</code>)\n\n"
-        f"🔒 وثیقه گیرنده (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {borrower_collateral}</code>\n"
-        f"🔒 وثیقه ضامن (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {guarantor_collateral}</code>\n\n"
-        f"💰 موجودی آزاد لازم شما: <code>₳ {required_balance_borrower}</code>\n"
-        f"💰 موجودی آزاد لازم ضامن: <code>₳ {required_balance_guarantor}</code>\n\n"
+        f"🔒 وثیقه گیرنده (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {_fmt_money(borrower_collateral)}</code>\n"
+        f"🔒 وثیقه ضامن (فقط با تأیید نهایی سوپرادمین قفل می‌شود): <code>₳ {_fmt_money(guarantor_collateral)}</code>\n\n"
+        f"💰 موجودی آزاد لازم شما: <code>₳ {_fmt_money(required_balance_borrower)}</code>\n"
+        f"💰 موجودی آزاد لازم ضامن: <code>₳ {_fmt_money(required_balance_guarantor)}</code>\n\n"
         "⚠️ با تأیید، درخواست ضمانت برای ضامن انتخابی ارسال خواهد شد."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -9005,9 +9088,9 @@ async def cb_loan_guarantor_preview_confirm(callback: CallbackQuery, state: FSMC
     try:
         await callback.bot.send_message(
             guarantor_id,
-            f"🤝 کاربر <b>{requester_name}</b> درخواست وام <code>₳ {amount}</code> آتر با سود "
+            f"🤝 کاربر <b>{requester_name}</b> درخواست وام <code>₳ {_fmt_money(amount)}</code> آتر با سود "
             f"<b>{interest}٪</b> در <b>{installments}</b> قسط کرده است.\n"
-            f"🔒 در صورت تأیید نهایی سوپرادمین، مبلغ <code>₳ {guarantor_collateral}</code> از موجودی آزاد شما "
+            f"🔒 در صورت تأیید نهایی سوپرادمین، مبلغ <code>₳ {_fmt_money(guarantor_collateral)}</code> از موجودی آزاد شما "
             "به‌عنوان وثیقه قفل خواهد شد.\n\n"
             "آیا حاضر می‌شوید ضامن این شخص شوید؟\n\n"
             "⚠️ نکته: در صورت عدم پرداخت اقساط توسط متقاضی، مبالغ اقساط از موجودی شما کسر خواهد شد.",
@@ -9059,7 +9142,7 @@ async def cb_guarantor_accept(callback: CallbackQuery):
     try:
         await callback.message.edit_text(
             "⚠️ <b>هشدار نهایی</b>\n\n"
-            f"با تأیید نهایی، مبلغ <code>₳ {loan['guarantor_collateral_amount'] or 0}</code> از موجودی آزاد شما "
+            f"با تأیید نهایی، مبلغ <code>₳ {_fmt_money(loan['guarantor_collateral_amount'] or 0)}</code> از موجودی آزاد شما "
             "به‌عنوان وثیقه ضمانت این وام قفل خواهد شد (فقط در لحظه تأیید نهایی سوپرادمین).\n"
             "همچنین در صورت عدم پرداخت اقساط توسط متقاضی، مبالغ اقساط از موجودی شما کسر خواهد شد.\n\n"
             "برای ادامه، تأیید نهایی خود را اعلام کنید.",
@@ -9261,8 +9344,8 @@ async def cb_loan_admin_approve(callback: CallbackQuery):
     try:
         await callback.bot.send_message(
             loan["user_id"],
-            f"🎉 وام شما به مبلغ <code>₳ {loan['total_amount']}</code> تأیید و به حساب شما واریز شد.\n"
-            f"🧮 مجموع بازپرداخت: <code>₳ {loan['total_repayment']}</code> در <b>{loan['installments_count']}</b> قسط.",
+            f"🎉 وام شما به مبلغ <code>₳ {_fmt_money(loan['total_amount'])}</code> تأیید و به حساب شما واریز شد.\n"
+            f"🧮 مجموع بازپرداخت: <code>₳ {_fmt_money(loan['total_repayment'])}</code> در <b>{loan['installments_count']}</b> قسط.",
             parse_mode="HTML",
         )
     except Exception:
@@ -9324,7 +9407,7 @@ async def _build_my_loans_view(user_id: int):
     kb_rows = []
     for loan in loans:
         parts.append(
-            f"\n🔹 وام #{loan['id']} | مبلغ: <code>₳ {loan['total_amount']}</code> | "
+            f"\n🔹 وام #{loan['id']} | مبلغ: <code>₳ {_fmt_money(loan['total_amount'])}</code> | "
             f"وضعیت: {status_labels.get(loan['status'], loan['status'])}"
         )
         if loan["status"] == "ACTIVE":
@@ -9340,7 +9423,7 @@ async def _build_my_loans_view(user_id: int):
                 if due_dt.tzinfo is None:
                     due_dt = due_dt.replace(tzinfo=timezone.utc)
                 due = due_dt.astimezone(IRAN_TZ).strftime('%Y-%m-%d')
-                parts.append(f"   💳 قسط بعدی: <code>₳ {next_inst['amount']}</code> | سررسید: {due}")
+                parts.append(f"   💳 قسط بعدی: <code>₳ {_fmt_money(next_inst['amount'])}</code> | سررسید: {due}")
                 kb_rows.append([InlineKeyboardButton(
                     text=f"💳 پرداخت قسط #{next_inst['installment_number']} وام #{loan['id']}",
                     callback_data=f"pay_inst_{next_inst['id']}",
@@ -9465,7 +9548,7 @@ async def cb_pay_installment(callback: CallbackQuery):
                 return await callback.answer("❌ حساب شما مسدود است.", show_alert=True)
             if u["balance"] < inst["amount"]:
                 return await callback.answer(
-                    f"❌ موجودی شما کافی نیست. مبلغ قسط: ₳ {inst['amount']}", show_alert=True
+                    f"❌ موجودی شما کافی نیست. مبلغ قسط: ₳ {_fmt_money(inst['amount'])}", show_alert=True
                 )
 
             await db.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (inst["amount"], user_id))
@@ -9639,12 +9722,12 @@ async def process_due_installments(bot: Bot):
             carried_over_text = ""
             if overdue_prev:
                 breakdown_lines = "\n".join(
-                    f"   ↳ قسط #{p['installment_number']} (عقب‌افتاده): <code>₳ {p['amount']}</code>"
+                    f"   ↳ قسط #{p['installment_number']} (عقب‌افتاده): <code>₳ {_fmt_money(p['amount'])}</code>"
                     for p in overdue_prev
                 )
                 carried_over_text = (
                     f"\n⚠️ <b>اقساط عقب‌افتاده به این سررسید اضافه شد:</b>\n{breakdown_lines}\n"
-                    f"💳 مبلغ قسط جدید: <code>₳ {inst['amount']}</code>\n"
+                    f"💳 مبلغ قسط جدید: <code>₳ {_fmt_money(inst['amount'])}</code>\n"
                 )
 
             kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -9655,12 +9738,12 @@ async def process_due_installments(bot: Bot):
                     borrower_id,
                     f"⏰ <b>سررسید قسط وام</b>\n\n"
                     f"🔢 شماره قسط: <code>{inst['installment_number']}</code>\n"
-                    f"💰 مبلغ اصل قسط: <code>₳ {principal_part}</code>\n"
-                    f"📈 سود این قسط: <code>₳ {interest_part}</code>\n"
+                    f"💰 مبلغ اصل قسط: <code>₳ {_fmt_money(principal_part)}</code>\n"
+                    f"📈 سود این قسط: <code>₳ {_fmt_money(interest_part)}</code>\n"
                     f"✅ اقساط پرداخت‌شده: <code>{paid_count}/{total_installments}</code>\n"
                     f"⏳ اقساط باقی‌مانده: <code>{total_installments - paid_count}</code>\n"
                     f"{carried_over_text}"
-                    f"🧮 مبلغ کل قابل پرداخت (شامل جریمه در صورت وجود): <code>₳ {combined_amount}</code>\n\n"
+                    f"🧮 مبلغ کل قابل پرداخت (شامل جریمه در صورت وجود): <code>₳ {_fmt_money(combined_amount)}</code>\n\n"
                     f"بانک مرکزی آترامنتوم",
                     reply_markup=kb,
                     parse_mode="HTML",
@@ -9695,7 +9778,7 @@ async def process_due_installments(bot: Bot):
                 await bot.send_message(
                     borrower_id,
                     f"⚠️ مهلت طلایی قسط #{inst['installment_number']} وام #{inst['loan_id']} به پایان رسید.\n"
-                    f"💰 جریمه دیرکرد اعمال شد. مبلغ جدید قسط: <code>₳ {new_amount}</code>",
+                    f"💰 جریمه دیرکرد اعمال شد. مبلغ جدید قسط: <code>₳ {_fmt_money(new_amount)}</code>",
                     parse_mode="HTML",
                 )
             except Exception:
@@ -9835,7 +9918,7 @@ async def _auto_collect_overdue_installment(bot: Bot, installment_id: int):
         try:
             await bot.send_message(
                 borrower_id,
-                f"🔻 مبلغ <code>₳ {collected}</code> بابت قسط معوق #{inst['installment_number']} وام #{inst['loan_id']} "
+                f"🔻 مبلغ <code>₳ {_fmt_money(collected)}</code> بابت قسط معوق #{inst['installment_number']} وام #{inst['loan_id']} "
                 f"به‌صورت خودکار از حساب/وثیقه شما کسر شد.",
                 parse_mode="HTML",
             )
@@ -9849,7 +9932,7 @@ async def _auto_collect_overdue_installment(bot: Bot, installment_id: int):
                     f"🚨 <b>هشدار نکول وام</b>\n\n"
                     f"وثیقه، موجودی وام‌گیرنده و ضامن برای پرداخت قسط #{inst['installment_number']} "
                     f"وام #{inst['loan_id']} (کاربر <code>{borrower_id}</code>) کافی نبود.\n"
-                    f"💰 باقیمانده بدهی وصول‌نشده: <code>₳ {remaining_debt}</code>",
+                    f"💰 باقیمانده بدهی وصول‌نشده: <code>₳ {_fmt_money(remaining_debt)}</code>",
                     parse_mode="HTML",
                 )
             except Exception:
@@ -10014,6 +10097,10 @@ async def _build_help_pages(user_id: int, group_only: bool = False) -> list:
         "•      <b>👥 وام ضامنی:</b> در این مدل، شخص دیگری ضامن شما می‌شود. تمکن مالی هر دو نفر ارزیابی شده و مقدار مشخصی از دارایی طرفین مسدود می‌گردد. با پرداخت آخرین قسط توسط متقاضی، مبلغ مسدودشده برای هر دو نفر آزاد خواهد شد.\n\n"
         "<b>⏰ جریمه دیرکرد:</b> به ازای هر روز تاخیر در پرداخت اقساط، درصد مشخصی به عنوان جریمه روی مبلغ قسط محاسبه و اعمال می‌شود.\n\n"
         "<b>📌 مدیریت وام‌ها:</b> با استفاده از دستور وام‌های من می‌توانید در هر لحظه وضعیت کلی، تعداد اقساط و روند پرداخت وام‌های فعال خود را بررسی و مشاهده نمایید.\n\n"
+        "<b>🏆 جدول برترین‌ها (لیدربورد)</b>\n"
+        "در این بخش می‌توانید فهرست ۲۵ کاربر برتر را بر اساس مجموع دارایی خالص مشاهده نمایید.\n\n"
+        "<b>📊 رقابت و ارتقای رتبه:</b>\n"
+        "این جدول به صورت هوشمند به‌روزرسانی می‌شود. شما می‌توانید با مدیریت دارایی‌ها، افزایش سپرده‌گذاری و مشارکت فعال، رتبه خود را در میان برترین سرمایه‌گذاران ارتقا داده و به مدارج بالاتر صعود کنید.\n\n"
     )
 
     assets_tracking_page = (
